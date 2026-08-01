@@ -11,6 +11,8 @@ const POST_PROCESS_TEXTURE_SAMPLES_PER_PIXEL = 20;
 const MAX_REFLECTIONS_PER_PIXEL = 16;
 const MAX_POST_PROCESS_TEXTURE_SAMPLES_PER_PIXEL = 20;
 const SHADER_MAX_REFLECTIONS = 24;
+const REFERENCE_FRAME_DURATION_MS = 1000 / 60;
+const ROTATION_FOLLOW_PER_REFERENCE_FRAME = 0.07;
 
 const VERTEX_SHADER = `#version 300 es
 precision highp float;
@@ -1106,6 +1108,7 @@ export default function MirrorChamber() {
     let animationFrame = 0;
     let disposed = false;
     const startedAt = performance.now();
+    let previousRenderAt = startedAt;
 
     try {
       const vertexShader = compileShader(
@@ -1309,10 +1312,20 @@ export default function MirrorChamber() {
         if (disposed || !sceneProgram || !postProgram) return;
         resize();
         const controls = controlsRef.current;
+        const elapsedFrames =
+          Math.max(0, now - previousRenderAt) /
+          REFERENCE_FRAME_DURATION_MS;
+        previousRenderAt = now;
+        const rotationFollow =
+          1 -
+          Math.pow(
+            1 - ROTATION_FOLLOW_PER_REFERENCE_FRAME,
+            elapsedFrames,
+          );
         controls.rotation = slerpQuaternions(
           controls.rotation,
           controls.targetRotation,
-          0.07,
+          rotationFollow,
         );
         controls.zoom +=
           (controls.targetZoom - controls.zoom) * 0.08;
