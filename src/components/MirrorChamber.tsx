@@ -20,7 +20,7 @@ in vec2 vUv;
 
 uniform vec2 uResolution;
 uniform float uTime;
-uniform vec2 uRotation;
+uniform mat3 uRotation;
 uniform float uZoom;
 uniform int uBounces;
 uniform vec4 uPlanes[20];
@@ -41,26 +41,6 @@ float hash21(vec2 p) {
   p = fract(p * vec2(123.34, 456.21));
   p += dot(p, p + 45.32);
   return fract(p.x * p.y);
-}
-
-mat3 rotateX(float angle) {
-  float c = cos(angle);
-  float s = sin(angle);
-  return mat3(
-    1.0, 0.0, 0.0,
-    0.0, c, s,
-    0.0, -s, c
-  );
-}
-
-mat3 rotateY(float angle) {
-  float c = cos(angle);
-  float s = sin(angle);
-  return mat3(
-    c, 0.0, -s,
-    0.0, 1.0, 0.0,
-    s, 0.0, c
-  );
 }
 
 float segmentDistance(vec3 p, vec3 a, vec3 b) {
@@ -439,9 +419,7 @@ void main() {
 
   vec3 worldRo = vec3(0.0, 0.10, uZoom);
   vec3 worldRd = normalize(vec3(screen * 0.79, -2.18));
-  mat3 objectToWorld =
-    rotateY(uRotation.x) *
-    rotateX(uRotation.y);
+  mat3 objectToWorld = uRotation;
   mat3 worldToObject = transpose(objectToWorld);
   vec3 ro = worldToObject * worldRo;
   vec3 rd = normalize(worldToObject * worldRd);
@@ -792,19 +770,171 @@ function compileShader(
   return shader;
 }
 
+type Quaternion = readonly [
+  number,
+  number,
+  number,
+  number,
+];
+
+function multiplyQuaternions(
+  a: Quaternion,
+  b: Quaternion,
+): Quaternion {
+  return [
+    a[3] * b[0] +
+      a[0] * b[3] +
+      a[1] * b[2] -
+      a[2] * b[1],
+    a[3] * b[1] -
+      a[0] * b[2] +
+      a[1] * b[3] +
+      a[2] * b[0],
+    a[3] * b[2] +
+      a[0] * b[1] -
+      a[1] * b[0] +
+      a[2] * b[3],
+    a[3] * b[3] -
+      a[0] * b[0] -
+      a[1] * b[1] -
+      a[2] * b[2],
+  ];
+}
+
+function normalizeQuaternion(
+  quaternion: Quaternion,
+): Quaternion {
+  const inverseLength =
+    1 /
+    Math.hypot(
+      quaternion[0],
+      quaternion[1],
+      quaternion[2],
+      quaternion[3],
+    );
+  return [
+    quaternion[0] * inverseLength,
+    quaternion[1] * inverseLength,
+    quaternion[2] * inverseLength,
+    quaternion[3] * inverseLength,
+  ];
+}
+
+function axisAngleQuaternion(
+  x: number,
+  y: number,
+  z: number,
+  angle: number,
+): Quaternion {
+  const halfAngle = angle * 0.5;
+  const scale = Math.sin(halfAngle);
+  return [
+    x * scale,
+    y * scale,
+    z * scale,
+    Math.cos(halfAngle),
+  ];
+}
+
+function screenDragQuaternion(
+  horizontal: number,
+  vertical: number,
+): Quaternion {
+  const angle = Math.hypot(horizontal, vertical);
+  if (angle < 1e-8) return [0, 0, 0, 1];
+  const scale = Math.sin(angle * 0.5) / angle;
+
+  // Pointer Y maps to the camera's horizontal axis; pointer X maps
+  // to its vertical axis. These axes stay fixed on screen regardless
+  // of the object's existing orientation.
+  return [
+    vertical * scale,
+    horizontal * scale,
+    0,
+    Math.cos(angle * 0.5),
+  ];
+}
+
+function slerpQuaternions(
+  from: Quaternion,
+  to: Quaternion,
+  amount: number,
+): Quaternion {
+  let target = to;
+  let cosine =
+    from[0] * to[0] +
+    from[1] * to[1] +
+    from[2] * to[2] +
+    from[3] * to[3];
+
+  if (cosine < 0) {
+    cosine = -cosine;
+    target = [-to[0], -to[1], -to[2], -to[3]];
+  }
+
+  if (cosine > 0.9995) {
+    return normalizeQuaternion([
+      from[0] + (target[0] - from[0]) * amount,
+      from[1] + (target[1] - from[1]) * amount,
+      from[2] + (target[2] - from[2]) * amount,
+      from[3] + (target[3] - from[3]) * amount,
+    ]);
+  }
+
+  const angle = Math.acos(Math.min(1, cosine));
+  const inverseSine = 1 / Math.sin(angle);
+  const fromScale =
+    Math.sin((1 - amount) * angle) * inverseSine;
+  const toScale = Math.sin(amount * angle) * inverseSine;
+  return [
+    from[0] * fromScale + target[0] * toScale,
+    from[1] * fromScale + target[1] * toScale,
+    from[2] * fromScale + target[2] * toScale,
+    from[3] * fromScale + target[3] * toScale,
+  ];
+}
+
+function writeQuaternionMatrix(
+  quaternion: Quaternion,
+  matrix: Float32Array,
+) {
+  const [x, y, z, w] = quaternion;
+  const xx = x * x;
+  const yy = y * y;
+  const zz = z * z;
+  const xy = x * y;
+  const xz = x * z;
+  const yz = y * z;
+  const xw = x * w;
+  const yw = y * w;
+  const zw = z * w;
+
+  matrix[0] = 1 - 2 * (yy + zz);
+  matrix[1] = 2 * (xy + zw);
+  matrix[2] = 2 * (xz - yw);
+  matrix[3] = 2 * (xy - zw);
+  matrix[4] = 1 - 2 * (xx + zz);
+  matrix[5] = 2 * (yz + xw);
+  matrix[6] = 2 * (xz + yw);
+  matrix[7] = 2 * (yz - xw);
+  matrix[8] = 1 - 2 * (xx + yy);
+}
+
+const INITIAL_ROTATION = multiplyQuaternions(
+  axisAngleQuaternion(0, 1, 0, 0.54),
+  axisAngleQuaternion(1, 0, 0, -0.16),
+);
+
 export default function MirrorChamber() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [error, setError] = useState("");
   const controlsRef = useRef({
     dragging: false,
     pointerId: null as number | null,
-    pointerTime: 0,
     x: 0,
     y: 0,
-    yaw: 0.54,
-    pitch: -0.16,
-    velocityYaw: 0,
-    velocityPitch: 0,
+    rotation: INITIAL_ROTATION,
+    targetRotation: INITIAL_ROTATION,
     zoom: 5.55,
     targetZoom: 5.55,
     lastInteraction: 0,
@@ -830,7 +960,6 @@ export default function MirrorChamber() {
     let animationFrame = 0;
     let disposed = false;
     const startedAt = performance.now();
-    let previousFrameAt = startedAt;
 
     try {
       const vertexShader = compileShader(
@@ -927,6 +1056,7 @@ export default function MirrorChamber() {
         scene: gl.getUniformLocation(activePostProgram, "uScene"),
         texel: gl.getUniformLocation(activePostProgram, "uTexel"),
       };
+      const rotationMatrix = new Float32Array(9);
 
       const renderTexture = gl.createTexture();
       const framebuffer = gl.createFramebuffer();
@@ -1023,19 +1153,11 @@ export default function MirrorChamber() {
         if (disposed || !sceneProgram || !postProgram) return;
         resize();
         const controls = controlsRef.current;
-        const deltaSeconds = Math.min(
-          Math.max((now - previousFrameAt) / 1000, 0),
-          0.05,
+        controls.rotation = slerpQuaternions(
+          controls.rotation,
+          controls.targetRotation,
+          0.07,
         );
-        previousFrameAt = now;
-
-        if (!controls.dragging) {
-          controls.yaw += controls.velocityYaw * deltaSeconds;
-          controls.pitch += controls.velocityPitch * deltaSeconds;
-          const momentumDecay = Math.exp(-7.5 * deltaSeconds);
-          controls.velocityYaw *= momentumDecay;
-          controls.velocityPitch *= momentumDecay;
-        }
         controls.zoom +=
           (controls.targetZoom - controls.zoom) * 0.08;
 
@@ -1051,10 +1173,14 @@ export default function MirrorChamber() {
           uniforms.time,
           (now - startedAt) / 1000,
         );
-        gl.uniform2f(
+        writeQuaternionMatrix(
+          controls.rotation,
+          rotationMatrix,
+        );
+        gl.uniformMatrix3fv(
           uniforms.rotation,
-          controls.yaw,
-          controls.pitch,
+          false,
+          rotationMatrix,
         );
         gl.uniform1f(uniforms.zoom, controls.zoom);
         gl.drawArrays(gl.TRIANGLES, 0, 3);
@@ -1087,11 +1213,8 @@ export default function MirrorChamber() {
         event.preventDefault();
         controls.dragging = true;
         controls.pointerId = event.pointerId;
-        controls.pointerTime = event.timeStamp;
         controls.x = event.clientX;
         controls.y = event.clientY;
-        controls.velocityYaw = 0;
-        controls.velocityPitch = 0;
         controls.lastInteraction = performance.now();
         canvas.setPointerCapture(event.pointerId);
         canvas.classList.add("is-dragging");
@@ -1108,43 +1231,21 @@ export default function MirrorChamber() {
 
         const deltaX = event.clientX - controls.x;
         const deltaY = event.clientY - controls.y;
-        const shortestViewportEdge = Math.max(
-          600,
-          Math.min(canvas.clientWidth, canvas.clientHeight),
-        );
-        const radiansPerPixel =
-          (Math.PI * 1.5) / shortestViewportEdge;
-        const yawDelta = deltaX * radiansPerPixel;
-        const pitchDelta = deltaY * radiansPerPixel;
-        const elapsedSeconds = Math.max(
-          (event.timeStamp - controls.pointerTime) / 1000,
-          1 / 240,
+        const dragRotation = screenDragQuaternion(
+          deltaX * 0.005,
+          deltaY * 0.005,
         );
 
-        // Move the object with the pointer instead of orbiting the
-        // camera against it. Updating the angles directly keeps the
-        // object under the cursor with no springy input lag.
-        controls.yaw += yawDelta;
-        controls.pitch += pitchDelta;
-        controls.velocityYaw = Math.max(
-          -4.5,
-          Math.min(
-            4.5,
-            controls.velocityYaw * 0.35 +
-              (yawDelta / elapsedSeconds) * 0.65,
-          ),
-        );
-        controls.velocityPitch = Math.max(
-          -4.5,
-          Math.min(
-            4.5,
-            controls.velocityPitch * 0.35 +
-              (pitchDelta / elapsedSeconds) * 0.65,
+        // Pre-multiplication applies each drag around the camera's
+        // screen axes, never around axes already rotated with the object.
+        controls.targetRotation = normalizeQuaternion(
+          multiplyQuaternions(
+            dragRotation,
+            controls.targetRotation,
           ),
         );
         controls.x = event.clientX;
         controls.y = event.clientY;
-        controls.pointerTime = event.timeStamp;
         controls.lastInteraction = performance.now();
       };
 
@@ -1152,10 +1253,6 @@ export default function MirrorChamber() {
         const controls = controlsRef.current;
         if (controls.pointerId !== event.pointerId) return;
 
-        if (event.timeStamp - controls.pointerTime > 80) {
-          controls.velocityYaw = 0;
-          controls.velocityPitch = 0;
-        }
         controls.dragging = false;
         controls.pointerId = null;
         controls.lastInteraction = performance.now();
@@ -1163,13 +1260,6 @@ export default function MirrorChamber() {
           canvas.releasePointerCapture(event.pointerId);
         }
         canvas.classList.remove("is-dragging");
-      };
-
-      const pointerCancel = (event: PointerEvent) => {
-        const controls = controlsRef.current;
-        controls.velocityYaw = 0;
-        controls.velocityPitch = 0;
-        pointerUp(event);
       };
 
       const wheel = (event: WheelEvent) => {
@@ -1189,7 +1279,7 @@ export default function MirrorChamber() {
       canvas.addEventListener("pointerdown", pointerDown);
       canvas.addEventListener("pointermove", pointerMove);
       canvas.addEventListener("pointerup", pointerUp);
-      canvas.addEventListener("pointercancel", pointerCancel);
+      canvas.addEventListener("pointercancel", pointerUp);
       canvas.addEventListener("wheel", wheel, {
         passive: false,
       });
@@ -1203,7 +1293,7 @@ export default function MirrorChamber() {
         canvas.removeEventListener("pointerup", pointerUp);
         canvas.removeEventListener(
           "pointercancel",
-          pointerCancel,
+          pointerUp,
         );
         canvas.removeEventListener("wheel", wheel);
         gl.deleteFramebuffer(framebuffer);
