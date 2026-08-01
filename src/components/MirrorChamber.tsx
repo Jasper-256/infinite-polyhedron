@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 
 // Rendering quality controls.
-const MIRROR_BOUNCES = 16;
+const MIRROR_BOUNCES = 24;
 const POST_PROCESS_SAMPLES = 20;
 const REFLECTION_FADE_RATE = 0.064;
 const REFERENCE_FRAME_DURATION_MS = 1000 / 120;
@@ -664,6 +664,64 @@ vec3 brightSample(vec2 uv) {
   return sampleColor * threshold;
 }
 
+float luminance(vec3 color) {
+  return dot(color, vec3(0.299, 0.587, 0.114));
+}
+
+vec3 antialiasedScene(vec2 uv) {
+  vec3 center = texture(uScene, uv).rgb;
+  vec3 north = texture(
+    uScene,
+    uv + vec2(0.0, uTexel.y)
+  ).rgb;
+  vec3 south = texture(
+    uScene,
+    uv - vec2(0.0, uTexel.y)
+  ).rgb;
+  vec3 east = texture(
+    uScene,
+    uv + vec2(uTexel.x, 0.0)
+  ).rgb;
+  vec3 west = texture(
+    uScene,
+    uv - vec2(uTexel.x, 0.0)
+  ).rgb;
+
+  float centerLuma = luminance(center);
+  float northLuma = luminance(north);
+  float southLuma = luminance(south);
+  float eastLuma = luminance(east);
+  float westLuma = luminance(west);
+  float minimumLuma = min(
+    centerLuma,
+    min(min(northLuma, southLuma), min(eastLuma, westLuma))
+  );
+  float maximumLuma = max(
+    centerLuma,
+    max(max(northLuma, southLuma), max(eastLuma, westLuma))
+  );
+  float contrast = maximumLuma - minimumLuma;
+  float threshold = max(0.035, maximumLuma * 0.12);
+  float edgeBlend = smoothstep(
+    threshold,
+    threshold * 3.0,
+    contrast
+  ) * 0.90;
+
+  float horizontalContrast = abs(eastLuma - westLuma);
+  float verticalContrast = abs(northLuma - southLuma);
+  vec3 acrossEdge = horizontalContrast > verticalContrast
+    ? (east + west) * 0.5
+    : (north + south) * 0.5;
+  // Immediate neighbors create a one-pixel coverage transition,
+  // rather than a wider image blur.
+  return mix(
+    center,
+    (center + acrossEdge) * 0.5,
+    edgeBlend
+  );
+}
+
 bool canReceiveBloom() {
   vec2 screen = vUv * 2.0 - 1.0;
   screen.x *= uTexel.y / uTexel.x;
@@ -684,12 +742,20 @@ bool canReceiveBloom() {
 void main() {
   vec2 fromCenter = vUv - 0.5;
   vec2 chromaOffset = fromCenter * 0.00022;
-  vec3 base = texture(uScene, vUv).rgb;
+  vec3 base = antialiasedScene(vUv);
 #if TEXTURE_SAMPLES_PER_PIXEL >= 2
-  base.r = texture(uScene, vUv + chromaOffset).r;
+  base.r = mix(
+    base.r,
+    texture(uScene, vUv + chromaOffset).r,
+    0.15
+  );
 #endif
 #if TEXTURE_SAMPLES_PER_PIXEL >= 3
-  base.b = texture(uScene, vUv - chromaOffset).b;
+  base.b = mix(
+    base.b,
+    texture(uScene, vUv - chromaOffset).b,
+    0.15
+  );
 #endif
 
   vec3 bloom = vec3(0.0);
