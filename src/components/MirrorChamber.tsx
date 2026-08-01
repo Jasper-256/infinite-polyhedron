@@ -5,7 +5,6 @@ import * as THREE from "three";
 
 // Rendering quality controls. Keep these near the top so performance can be
 // tuned without changing the renderer itself.
-const RENDER_PIXEL_RATIO = 2;
 const REFLECTIONS_PER_PIXEL = 16;
 const POST_PROCESS_TEXTURE_SAMPLES_PER_PIXEL = 20;
 
@@ -1584,13 +1583,14 @@ export default function MirrorChamber() {
       let renderWidth = 0;
       let renderHeight = 0;
       const resize = () => {
+        const pixelRatio = window.devicePixelRatio;
         const width = Math.max(
           1,
-          Math.round(canvas.clientWidth * RENDER_PIXEL_RATIO),
+          Math.round(canvas.clientWidth * pixelRatio),
         );
         const height = Math.max(
           1,
-          Math.round(canvas.clientHeight * RENDER_PIXEL_RATIO),
+          Math.round(canvas.clientHeight * pixelRatio),
         );
         if (width === renderWidth && height === renderHeight) return;
 
