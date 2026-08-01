@@ -1,9 +1,6 @@
 :root {
-  --ink: #f3f7f8;
-  --muted: rgba(229, 240, 242, 0.52);
-  --hairline: rgba(227, 242, 245, 0.2);
-  --accent: #32c8ff;
-  --page: #040609;
+  --page: #050506;
+  --text: rgba(255, 255, 255, 0.72);
 }
 
 * {
@@ -20,40 +17,16 @@ body {
 }
 
 body {
-  color: var(--ink);
   font-family: Arial, Helvetica, sans-serif;
   -webkit-font-smoothing: antialiased;
-}
-
-button,
-canvas {
-  -webkit-tap-highlight-color: transparent;
-}
-
-button {
-  color: inherit;
-  font: inherit;
 }
 
 .experience {
   position: relative;
   width: 100%;
   height: 100svh;
-  isolation: isolate;
+  overflow: hidden;
   background: var(--page);
-  transition: --accent 400ms ease;
-}
-
-.palette-0 {
-  --accent: #32c8ff;
-}
-
-.palette-1 {
-  --accent: #ff6b19;
-}
-
-.palette-2 {
-  --accent: #c463ff;
 }
 
 .chamber {
@@ -64,287 +37,24 @@ button {
   height: 100%;
   cursor: grab;
   touch-action: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .chamber.is-dragging {
   cursor: grabbing;
 }
 
-.interface {
-  position: absolute;
-  z-index: 2;
-  inset: 0;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  padding: clamp(24px, 3.4vw, 54px);
-  pointer-events: none;
-}
-
-.masthead {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-}
-
-.eyebrow,
-.specimen,
-.depth-tag,
-.gesture,
-.control-label,
-.loading {
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-}
-
-.eyebrow {
-  display: block;
-  margin-bottom: 15px;
-  color: var(--accent);
-  font-size: 9px;
-  font-weight: 700;
-}
-
-h1 {
-  margin: 0;
-  font-size: clamp(24px, 3.35vw, 53px);
-  font-weight: 300;
-  letter-spacing: -0.052em;
-  line-height: 0.88;
-}
-
-.specimen {
-  display: flex;
-  align-items: center;
-  gap: 17px;
-  color: var(--muted);
-  font-size: 8px;
-  font-weight: 700;
-}
-
-.specimen-mark {
-  color: var(--accent);
-  font-size: 12px;
-}
-
-.depth-tag {
-  position: absolute;
-  top: 50%;
-  right: clamp(24px, 3.4vw, 54px);
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  color: var(--muted);
-  font-size: 8px;
-  font-weight: 700;
-  transform: rotate(90deg) translateX(50%);
-  transform-origin: right center;
-}
-
-.depth-dot {
-  width: 5px;
-  height: 5px;
-  border: 1px solid var(--accent);
-  border-radius: 50%;
-  box-shadow: 0 0 12px var(--accent);
-}
-
-.controls {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-}
-
-.gesture {
-  margin: 0;
-  color: var(--muted);
-  font-size: 8px;
-  font-weight: 700;
-}
-
-.gesture-mobile {
-  display: none;
-}
-
-.control-group {
-  display: flex;
-  align-items: stretch;
-  gap: 9px;
-  pointer-events: auto;
-}
-
-.text-control,
-.icon-control {
-  border: 1px solid var(--hairline);
-  background: rgba(5, 9, 13, 0.38);
-  backdrop-filter: blur(12px);
-  cursor: pointer;
-  transition:
-    border-color 180ms ease,
-    background 180ms ease,
-    transform 180ms ease;
-}
-
-.text-control:hover,
-.icon-control:hover {
-  border-color: color-mix(in srgb, var(--accent) 70%, transparent);
-  background: rgba(10, 17, 23, 0.62);
-}
-
-.text-control:active,
-.icon-control:active {
-  transform: scale(0.97);
-}
-
-.text-control:focus-visible,
-.icon-control:focus-visible {
-  outline: 1px solid var(--accent);
-  outline-offset: 3px;
-}
-
-.text-control {
-  min-width: 132px;
-  padding: 11px 14px 10px;
-  text-align: left;
-  font-size: 10px;
-}
-
-.control-label {
-  display: block;
-  margin-bottom: 5px;
-  color: var(--muted);
-  font-size: 7px;
-  font-weight: 700;
-}
-
-.icon-control {
-  display: grid;
-  width: 43px;
-  place-items: center;
-}
-
-.icon-control svg {
-  width: 14px;
-  fill: currentColor;
-}
-
-.loading {
-  position: absolute;
-  z-index: 4;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 13px;
-  background: var(--page);
-  color: var(--muted);
-  font-size: 8px;
-  font-weight: 700;
-  opacity: 1;
-  transition:
-    opacity 700ms ease 200ms,
-    visibility 700ms ease 200ms;
-}
-
-.loading-hidden {
-  visibility: hidden;
-  opacity: 0;
-}
-
-.loading-mark {
-  display: block;
-  width: 8px;
-  height: 8px;
-  border: 1px solid var(--accent);
-  animation: loading-pulse 1.2s ease-in-out infinite alternate;
-}
-
 .error-panel {
   position: absolute;
-  z-index: 5;
   top: 50%;
   left: 50%;
-  width: min(360px, calc(100% - 48px));
-  padding: 24px;
-  border: 1px solid var(--hairline);
-  background: rgba(5, 8, 12, 0.9);
-  text-align: center;
-  transform: translate(-50%, -50%);
-}
-
-.error-panel span {
-  color: var(--accent);
-  font-size: 10px;
-  letter-spacing: 0.15em;
-  text-transform: uppercase;
-}
-
-.error-panel p {
-  margin: 12px 0 0;
-  color: var(--muted);
+  width: min(340px, calc(100% - 48px));
+  padding: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(4, 4, 5, 0.88);
+  color: var(--text);
   font-size: 12px;
   line-height: 1.6;
-}
-
-.noise {
-  position: absolute;
-  z-index: 3;
-  inset: 0;
-  opacity: 0.025;
-  pointer-events: none;
-  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.8'/%3E%3C/svg%3E");
-  mix-blend-mode: soft-light;
-}
-
-@keyframes loading-pulse {
-  from {
-    opacity: 0.3;
-    transform: rotate(0deg) scale(0.8);
-  }
-  to {
-    opacity: 1;
-    transform: rotate(90deg) scale(1.15);
-    box-shadow: 0 0 18px var(--accent);
-  }
-}
-
-@media (max-width: 700px) {
-  .interface {
-    padding: 22px 20px 20px;
-  }
-
-  h1 {
-    font-size: 29px;
-  }
-
-  .specimen {
-    gap: 8px;
-  }
-
-  .specimen span:first-child,
-  .specimen span:last-child {
-    display: none;
-  }
-
-  .depth-tag {
-    right: 20px;
-  }
-
-  .gesture-desktop {
-    display: none;
-  }
-
-  .gesture-mobile {
-    display: inline;
-  }
-
-  .text-control {
-    min-width: 114px;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .loading-mark {
-    animation: none;
-  }
+  text-align: center;
+  transform: translate(-50%, -50%);
 }
