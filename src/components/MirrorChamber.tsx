@@ -6,6 +6,7 @@ import * as THREE from "three";
 // Rendering quality controls.
 const MIRROR_BOUNCES = 16;
 const POST_PROCESS_SAMPLES = 20;
+const REFLECTION_FADE_RATE = 0.064;
 const REFERENCE_FRAME_DURATION_MS = 1000 / 120;
 const ROTATION_FOLLOW_PER_REFERENCE_FRAME = 0.07;
 const FRAME_RADIUS = 0.04;
@@ -789,7 +790,7 @@ function buildBounceLighting(): Float32Array {
       nearColor[0] + (farColor[0] - nearColor[0]) * depthMix,
       nearColor[1] + (farColor[1] - nearColor[1]) * depthMix,
       nearColor[2] + (farColor[2] - nearColor[2]) * depthMix,
-      Math.exp(-bounce * 0.064),
+      Math.exp(-bounce * REFLECTION_FADE_RATE),
     );
   }
 
