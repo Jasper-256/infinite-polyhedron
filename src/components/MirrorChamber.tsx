@@ -1613,7 +1613,7 @@ export default function MirrorChamber() {
       let renderWidth = 0;
       let renderHeight = 0;
       const resize = () => {
-        const pixelRatio = window.devicePixelRatio;
+        const pixelRatio = Math.max(2, window.devicePixelRatio);
         const width = Math.max(
           1,
           Math.round(canvas.clientWidth * pixelRatio),
