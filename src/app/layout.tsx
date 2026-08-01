@@ -2,9 +2,9 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Infinite Icosahedron",
+  title: "Infinite Polyhedron",
   description:
-    "A real-time optical study of light inside a mirrored icosahedron.",
+    "A real-time optical study of light inside a mirrored polyhedron.",
 };
 
 export const viewport: Viewport = {
