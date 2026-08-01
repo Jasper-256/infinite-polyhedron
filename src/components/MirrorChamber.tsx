@@ -3,17 +3,12 @@
 import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 
-// Rendering quality controls. Keep these near the top so performance can be
-// tuned without changing the renderer itself.
-const REFLECTIONS_PER_PIXEL = 16;
-const POST_PROCESS_TEXTURE_SAMPLES_PER_PIXEL = 20;
-
-const MAX_REFLECTIONS_PER_PIXEL = 16;
-const MAX_POST_PROCESS_TEXTURE_SAMPLES_PER_PIXEL = 20;
-const SHADER_MAX_REFLECTIONS = 24;
-const REFERENCE_FRAME_DURATION_MS = 1000 / 60;
+// Rendering quality controls.
+const MIRROR_BOUNCES = 16;
+const POST_PROCESS_SAMPLES = 20;
+const REFERENCE_FRAME_DURATION_MS = 1000 / 120;
 const ROTATION_FOLLOW_PER_REFERENCE_FRAME = 0.07;
-const FRAME_RADIUS = 0.047;
+const FRAME_RADIUS = 0.04;
 
 const VERTEX_SHADER = `precision highp float;
 in vec2 position;
@@ -33,7 +28,6 @@ uniform vec2 uResolution;
 uniform float uTime;
 uniform mat3 uRotation;
 uniform float uZoom;
-uniform int uBounces;
 uniform vec4 uPlanes[20];
 uniform vec4 uFaceEdgeOriginA[20];
 uniform vec4 uFaceEdgeOriginB[20];
@@ -41,10 +35,10 @@ uniform vec4 uFaceEdgeOriginC[20];
 uniform vec4 uFaceEdgeDirectionA[20];
 uniform vec4 uFaceEdgeDirectionB[20];
 uniform vec4 uFaceEdgeDirectionC[20];
-uniform vec4 uBounceLighting[${SHADER_MAX_REFLECTIONS}];
+uniform vec4 uBounceLighting[${MIRROR_BOUNCES}];
 
 #define FACE_COUNT 20
-#define MAX_BOUNCES ${SHADER_MAX_REFLECTIONS}
+#define MIRROR_BOUNCES ${MIRROR_BOUNCES}
 #define FAR 100.0
 
 const float LIGHT_CORE_RADIUS = 0.014;
@@ -284,8 +278,7 @@ vec3 traceMirroredInterior(vec3 ro, vec3 rd, int entryFace) {
   vec4 entryEdgeDirectionB = uFaceEdgeDirectionB[entryFace];
   vec4 entryEdgeDirectionC = uFaceEdgeDirectionC[entryFace];
 
-  for (int bounce = 0; bounce < MAX_BOUNCES; bounce++) {
-    if (bounce >= uBounces) break;
+  for (int bounce = 0; bounce < MIRROR_BOUNCES; bounce++) {
 
     vec3 faceNormal;
     int faceIndex;
@@ -667,13 +660,7 @@ void main() {
 
 const POST_FRAGMENT_SHADER = `precision highp float;
 
-#define TEXTURE_SAMPLES_PER_PIXEL ${Math.max(
-  1,
-  Math.min(
-    MAX_POST_PROCESS_TEXTURE_SAMPLES_PER_PIXEL,
-    Math.round(POST_PROCESS_TEXTURE_SAMPLES_PER_PIXEL),
-  ),
-)}
+#define TEXTURE_SAMPLES_PER_PIXEL ${POST_PROCESS_SAMPLES}
 
 out vec4 outColor;
 in vec2 vUv;
@@ -804,7 +791,7 @@ function buildBounceLighting(): Float32Array {
   const nearColor: Point = [1.0, 0.92, 0.82];
   const farColor: Point = [0.18, 0.58, 1.0];
 
-  for (let bounce = 0; bounce < SHADER_MAX_REFLECTIONS; bounce++) {
+  for (let bounce = 0; bounce < MIRROR_BOUNCES; bounce++) {
     const depthPosition = Math.max(
       0,
       Math.min(1, (bounce - 1) / 14),
@@ -1450,13 +1437,6 @@ export default function MirrorChamber() {
       const sceneResolution = new THREE.Vector2();
       const frameResolution = new THREE.Vector2();
       const postTexel = new THREE.Vector2();
-      const reflectionCount = Math.max(
-        1,
-        Math.min(
-          MAX_REFLECTIONS_PER_PIXEL,
-          Math.round(REFLECTIONS_PER_PIXEL),
-        ),
-      );
 
       const sceneMaterial = new THREE.RawShaderMaterial({
         glslVersion: THREE.GLSL3,
@@ -1467,7 +1447,6 @@ export default function MirrorChamber() {
           uTime: { value: 0 },
           uRotation: { value: sceneRotation },
           uZoom: { value: 5.55 },
-          uBounces: { value: reflectionCount },
           uPlanes: { value: geometry.planes },
           uFaceEdgeOriginA: {
             value: geometry.faceEdgeOriginA,
