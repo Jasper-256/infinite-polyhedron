@@ -2,6 +2,16 @@
 
 import { useEffect, useRef, useState } from "react";
 
+// Rendering quality controls. Keep these near the top so performance can be
+// tuned without changing the renderer itself.
+const RENDER_PIXEL_RATIO = 1;
+const REFLECTIONS_PER_PIXEL = 16;
+const POST_PROCESS_TEXTURE_SAMPLES_PER_PIXEL = 20;
+
+const MAX_REFLECTIONS_PER_PIXEL = 16;
+const MAX_POST_PROCESS_TEXTURE_SAMPLES_PER_PIXEL = 20;
+const SHADER_MAX_REFLECTIONS = 24;
+
 const VERTEX_SHADER = `#version 300 es
 precision highp float;
 in vec2 aPosition;
@@ -24,22 +34,24 @@ uniform mat3 uRotation;
 uniform float uZoom;
 uniform int uBounces;
 uniform vec4 uPlanes[20];
-uniform vec3 uEdgeA[30];
-uniform vec3 uEdgeB[30];
+uniform vec4 uEdgeOrigins[30];
+uniform vec4 uEdgeDirections[30];
 uniform vec3 uFrameA[30];
 uniform vec3 uFrameB[30];
 uniform vec3 uFaceA[20];
 uniform vec3 uFaceB[20];
 uniform vec3 uFaceC[20];
+uniform vec4 uBounceLighting[${SHADER_MAX_REFLECTIONS}];
 
 #define FACE_COUNT 20
 #define EDGE_COUNT 30
-#define MAX_BOUNCES 24
+#define MAX_BOUNCES ${SHADER_MAX_REFLECTIONS}
 #define FAR 100.0
 
 const float LIGHT_CORE_RADIUS = 0.014;
 const float LIGHT_RAIL_RADIUS = 0.036;
 const float MIRROR_EDGE_INSET = 0.043;
+const float BOUNDING_RADIUS_SQUARED = 2.5921;
 
 float hash21(vec2 p) {
   p = fract(p * vec2(123.34, 456.21));
@@ -54,56 +66,60 @@ float segmentDistance(vec3 p, vec3 a, vec3 b) {
   return length(pa - ba * h);
 }
 
-float segmentSegmentDistance(
+float segmentSegmentDistanceSquared(
   vec3 p1,
   vec3 q1,
-  vec3 p2,
-  vec3 q2,
+  vec4 edgeOriginData,
+  vec4 edgeDirectionData,
   out float firstAlong
 ) {
+  vec3 p2 = edgeOriginData.xyz;
   vec3 d1 = q1 - p1;
-  vec3 d2 = q2 - p2;
+  vec3 d2 = edgeDirectionData.xyz;
   vec3 r = p1 - p2;
   float a = dot(d1, d1);
-  float e = dot(d2, d2);
+  float e = edgeDirectionData.w;
+  float inverseE = edgeOriginData.w;
   float f = dot(d2, r);
   float s;
   float t;
 
-  if (a <= 0.000001 && e <= 0.000001) {
+  if (a <= 0.000001) {
     s = 0.0;
-    t = 0.0;
-  } else if (a <= 0.000001) {
-    s = 0.0;
-    t = clamp(f / e, 0.0, 1.0);
+    t = clamp(f * inverseE, 0.0, 1.0);
   } else {
     float c = dot(d1, r);
-    if (e <= 0.000001) {
+    float b = dot(d1, d2);
+    float denominator = a * e - b * b;
+    s = denominator != 0.0
+      ? clamp((b * f - c * e) / denominator, 0.0, 1.0)
+      : 0.0;
+    t = (b * s + f) * inverseE;
+
+    if (t < 0.0) {
       t = 0.0;
       s = clamp(-c / a, 0.0, 1.0);
-    } else {
-      float b = dot(d1, d2);
-      float denominator = a * e - b * b;
-      s = denominator != 0.0
-        ? clamp((b * f - c * e) / denominator, 0.0, 1.0)
-        : 0.0;
-      t = (b * s + f) / e;
-
-      if (t < 0.0) {
-        t = 0.0;
-        s = clamp(-c / a, 0.0, 1.0);
-      } else if (t > 1.0) {
-        t = 1.0;
-        s = clamp((b - c) / a, 0.0, 1.0);
-      }
+    } else if (t > 1.0) {
+      t = 1.0;
+      s = clamp((b - c) / a, 0.0, 1.0);
     }
   }
 
   firstAlong = s;
-  return length(
+  vec3 separation =
     (p1 + d1 * s) -
-    (p2 + d2 * t)
-  );
+    (p2 + d2 * t);
+  return dot(separation, separation);
+}
+
+bool intersectsBoundingSphere(vec3 ro, vec3 rd) {
+  float towardCenter = dot(ro, rd);
+  float originDistanceSquared =
+    dot(ro, ro) - BOUNDING_RADIUS_SQUARED;
+  float discriminant =
+    towardCenter * towardCenter - originDistanceSquared;
+  return discriminant >= 0.0 &&
+    (towardCenter < 0.0 || originDistanceSquared <= 0.0);
 }
 
 float faceEdgeDistance(vec3 point, int faceIndex) {
@@ -328,31 +344,28 @@ vec3 traceMirroredInterior(vec3 ro, vec3 rd) {
     float wallT = intersectInterior(ro, rd, faceNormal, faceIndex);
     if (wallT >= FAR - 1.0) break;
 
-    float nearestBar = FAR;
+    float nearestBarSquared = FAR * FAR;
     float nearestAlong = 0.0;
     vec3 rayEnd = ro + rd * wallT;
     for (int edgeIndex = 0; edgeIndex < EDGE_COUNT; edgeIndex++) {
       float rayAlong;
-      float distanceToBar = segmentSegmentDistance(
+      float distanceToBarSquared = segmentSegmentDistanceSquared(
         ro,
         rayEnd,
-        uEdgeA[edgeIndex],
-        uEdgeB[edgeIndex],
+        uEdgeOrigins[edgeIndex],
+        uEdgeDirections[edgeIndex],
         rayAlong
       );
-      if (distanceToBar < nearestBar) {
-        nearestBar = distanceToBar;
+      if (distanceToBarSquared < nearestBarSquared) {
+        nearestBarSquared = distanceToBarSquared;
         nearestAlong = rayAlong * wallT;
       }
     }
 
-    float depthMix = smoothstep(1.0, 15.0, float(bounce));
-    vec3 barColor = mix(
-      vec3(1.0, 0.92, 0.82),
-      vec3(0.18, 0.58, 1.0),
-      depthMix * 0.82
-    );
-    float depthLoss = exp(-float(bounce) * 0.064);
+    float nearestBar = sqrt(nearestBarSquared);
+    vec4 bounceLighting = uBounceLighting[bounce];
+    vec3 barColor = bounceLighting.rgb;
+    float depthLoss = bounceLighting.a;
     float airLoss = exp(-nearestAlong * 0.035);
     float opticalBloom = exp(-nearestBar * 42.0);
     radiance += throughput * depthLoss * airLoss *
@@ -448,26 +461,31 @@ void main() {
   vec3 rd = normalize(worldToObject * worldRd);
 
   vec3 color = background(worldRo, worldRd);
-  float nearT;
-  float farT;
-  int nearFace;
-  int farFace;
-  bool glassHit = intersectIcosahedron(
-    ro,
-    rd,
-    nearT,
-    farT,
-    nearFace,
-    farFace
-  ) && nearT > 0.0;
-  float frameT;
-  vec3 frameNormal;
-  bool frameHit = intersectExteriorFrame(
-    ro,
-    rd,
-    frameT,
-    frameNormal
-  );
+  float nearT = FAR;
+  float farT = FAR;
+  int nearFace = 0;
+  int farFace = 0;
+  bool glassHit = false;
+  float frameT = FAR;
+  vec3 frameNormal = vec3(0.0, 1.0, 0.0);
+  bool frameHit = false;
+
+  if (intersectsBoundingSphere(ro, rd)) {
+    glassHit = intersectIcosahedron(
+      ro,
+      rd,
+      nearT,
+      farT,
+      nearFace,
+      farFace
+    ) && nearT > 0.0;
+    frameHit = intersectExteriorFrame(
+      ro,
+      rd,
+      frameT,
+      frameNormal
+    );
+  }
 
   if (
     frameHit &&
@@ -550,6 +568,14 @@ void main() {
 const POST_FRAGMENT_SHADER = `#version 300 es
 precision highp float;
 
+#define TEXTURE_SAMPLES_PER_PIXEL ${Math.max(
+  1,
+  Math.min(
+    MAX_POST_PROCESS_TEXTURE_SAMPLES_PER_PIXEL,
+    Math.round(POST_PROCESS_TEXTURE_SAMPLES_PER_PIXEL),
+  ),
+)}
+
 out vec4 outColor;
 in vec2 vUv;
 
@@ -570,35 +596,72 @@ void main() {
   vec2 fromCenter = vUv - 0.5;
   vec2 chromaOffset = fromCenter * 0.00022;
   vec3 baseSample = texture(uScene, vUv).rgb;
-  vec3 base = vec3(
-    texture(uScene, vUv + chromaOffset).r,
-    baseSample.g,
-    texture(uScene, vUv - chromaOffset).b
-  );
+  vec3 base = baseSample;
+#if TEXTURE_SAMPLES_PER_PIXEL >= 2
+  base.r = texture(uScene, vUv + chromaOffset).r;
+#endif
+#if TEXTURE_SAMPLES_PER_PIXEL >= 3
+  base.b = texture(uScene, vUv - chromaOffset).b;
+#endif
 
-  vec3 bloom = brightSample(vUv) * 0.08;
+  vec3 bloom = vec3(0.0);
+#if TEXTURE_SAMPLES_PER_PIXEL >= 4
+  bloom += brightSample(vUv) * 0.08;
+#endif
+#if TEXTURE_SAMPLES_PER_PIXEL >= 5
   bloom += brightSample(vUv + vec2(uTexel.x * 2.0, 0.0)) * 0.08;
+#endif
+#if TEXTURE_SAMPLES_PER_PIXEL >= 6
   bloom += brightSample(vUv - vec2(uTexel.x * 2.0, 0.0)) * 0.08;
+#endif
+#if TEXTURE_SAMPLES_PER_PIXEL >= 7
   bloom += brightSample(vUv + vec2(0.0, uTexel.y * 2.0)) * 0.08;
+#endif
+#if TEXTURE_SAMPLES_PER_PIXEL >= 8
   bloom += brightSample(vUv - vec2(0.0, uTexel.y * 2.0)) * 0.08;
+#endif
+#if TEXTURE_SAMPLES_PER_PIXEL >= 9
   bloom += brightSample(vUv + uTexel * vec2(4.0, 4.0)) * 0.04;
+#endif
+#if TEXTURE_SAMPLES_PER_PIXEL >= 10
   bloom += brightSample(vUv + uTexel * vec2(-4.0, 4.0)) * 0.04;
+#endif
+#if TEXTURE_SAMPLES_PER_PIXEL >= 11
   bloom += brightSample(vUv + uTexel * vec2(4.0, -4.0)) * 0.04;
+#endif
+#if TEXTURE_SAMPLES_PER_PIXEL >= 12
   bloom += brightSample(vUv - uTexel * vec2(4.0, 4.0)) * 0.04;
+#endif
+#if TEXTURE_SAMPLES_PER_PIXEL >= 13
   bloom += brightSample(vUv + vec2(uTexel.x * 8.0, 0.0)) * 0.02;
+#endif
+#if TEXTURE_SAMPLES_PER_PIXEL >= 14
   bloom += brightSample(vUv - vec2(uTexel.x * 8.0, 0.0)) * 0.02;
+#endif
+#if TEXTURE_SAMPLES_PER_PIXEL >= 15
   bloom += brightSample(vUv + vec2(0.0, uTexel.y * 8.0)) * 0.02;
+#endif
+#if TEXTURE_SAMPLES_PER_PIXEL >= 16
   bloom += brightSample(vUv - vec2(0.0, uTexel.y * 8.0)) * 0.02;
+#endif
 
   vec3 halation = vec3(
     bloom.r,
     bloom.r * 0.62,
     bloom.r * 0.34
   );
+#if TEXTURE_SAMPLES_PER_PIXEL >= 17
   bloom += brightSample(vUv + vec2(uTexel.x * 16.0, 0.0)) * 0.012;
+#endif
+#if TEXTURE_SAMPLES_PER_PIXEL >= 18
   bloom += brightSample(vUv - vec2(uTexel.x * 16.0, 0.0)) * 0.012;
+#endif
+#if TEXTURE_SAMPLES_PER_PIXEL >= 19
   bloom += brightSample(vUv + vec2(0.0, uTexel.y * 16.0)) * 0.012;
+#endif
+#if TEXTURE_SAMPLES_PER_PIXEL >= 20
   bloom += brightSample(vUv - vec2(0.0, uTexel.y * 16.0)) * 0.012;
+#endif
 
   vec3 color = base + bloom * 0.72 + halation * 0.026;
   outColor = vec4(color, 1.0);
@@ -608,14 +671,42 @@ type Point = [number, number, number];
 
 type GeometryData = {
   planes: Float32Array;
-  edgeA: Float32Array;
-  edgeB: Float32Array;
+  edgeOrigins: Float32Array;
+  edgeDirections: Float32Array;
   frameA: Float32Array;
   frameB: Float32Array;
   faceA: Float32Array;
   faceB: Float32Array;
   faceC: Float32Array;
 };
+
+function buildBounceLighting(): Float32Array {
+  const lighting: number[] = [];
+  const nearColor: Point = [1.0, 0.92, 0.82];
+  const farColor: Point = [0.18, 0.58, 1.0];
+
+  for (let bounce = 0; bounce < SHADER_MAX_REFLECTIONS; bounce++) {
+    const depthPosition = Math.max(
+      0,
+      Math.min(1, (bounce - 1) / 14),
+    );
+    const depthMix =
+      depthPosition *
+      depthPosition *
+      (3 - 2 * depthPosition) *
+      0.82;
+    lighting.push(
+      nearColor[0] + (farColor[0] - nearColor[0]) * depthMix,
+      nearColor[1] + (farColor[1] - nearColor[1]) * depthMix,
+      nearColor[2] + (farColor[2] - nearColor[2]) * depthMix,
+      Math.exp(-bounce * 0.064),
+    );
+  }
+
+  return new Float32Array(lighting);
+}
+
+const BOUNCE_LIGHTING = buildBounceLighting();
 
 function buildIcosahedron(): GeometryData {
   const phi = (1 + Math.sqrt(5)) / 2;
@@ -734,8 +825,8 @@ function buildIcosahedron(): GeometryData {
     faceC.push(...c);
   }
 
-  const edgeA: number[] = [];
-  const edgeB: number[] = [];
+  const edgeOrigins: number[] = [];
+  const edgeDirections: number[] = [];
   const frameA: number[] = [];
   const frameB: number[] = [];
   for (let i = 0; i < vertices.length; i++) {
@@ -749,15 +840,32 @@ function buildIcosahedron(): GeometryData {
         const a = vertices[i];
         const b = vertices[j];
         const trim = 0.035;
-        edgeA.push(
+        const trimmedA: Point = [
           a[0] + (b[0] - a[0]) * trim,
           a[1] + (b[1] - a[1]) * trim,
           a[2] + (b[2] - a[2]) * trim,
-        );
-        edgeB.push(
+        ];
+        const trimmedB: Point = [
           b[0] + (a[0] - b[0]) * trim,
           b[1] + (a[1] - b[1]) * trim,
           b[2] + (a[2] - b[2]) * trim,
+        ];
+        const direction: Point = [
+          trimmedB[0] - trimmedA[0],
+          trimmedB[1] - trimmedA[1],
+          trimmedB[2] - trimmedA[2],
+        ];
+        const lengthSquared =
+          direction[0] * direction[0] +
+          direction[1] * direction[1] +
+          direction[2] * direction[2];
+        edgeOrigins.push(
+          ...trimmedA,
+          1 / lengthSquared,
+        );
+        edgeDirections.push(
+          ...direction,
+          lengthSquared,
         );
       }
     }
@@ -765,8 +873,8 @@ function buildIcosahedron(): GeometryData {
 
   return {
     planes: new Float32Array(planes),
-    edgeA: new Float32Array(edgeA),
-    edgeB: new Float32Array(edgeB),
+    edgeOrigins: new Float32Array(edgeOrigins),
+    edgeDirections: new Float32Array(edgeDirections),
     frameA: new Float32Array(frameA),
     frameB: new Float32Array(frameB),
     faceA: new Float32Array(faceA),
@@ -951,6 +1059,7 @@ const INITIAL_ROTATION = multiplyQuaternions(
 export default function MirrorChamber() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [error, setError] = useState("");
+  const [rendererReady, setRendererReady] = useState(false);
   const controlsRef = useRef({
     dragging: false,
     pointerId: null as number | null,
@@ -964,6 +1073,20 @@ export default function MirrorChamber() {
   });
 
   useEffect(() => {
+    // Strict Mode replays mount effects in development. Deferring readiness
+    // lets that replay cancel the first setup before WebGL compiles anything.
+    const initializationTimer = window.setTimeout(() => {
+      setRendererReady(true);
+    }, 0);
+
+    return () => {
+      window.clearTimeout(initializationTimer);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!rendererReady) return;
+
     const canvas = canvasRef.current;
     if (!canvas) return;
 
@@ -1067,13 +1190,14 @@ export default function MirrorChamber() {
         zoom: uniform("uZoom"),
         bounces: uniform("uBounces"),
         planes: uniform("uPlanes[0]"),
-        edgeA: uniform("uEdgeA[0]"),
-        edgeB: uniform("uEdgeB[0]"),
+        edgeOrigins: uniform("uEdgeOrigins[0]"),
+        edgeDirections: uniform("uEdgeDirections[0]"),
         frameA: uniform("uFrameA[0]"),
         frameB: uniform("uFrameB[0]"),
         faceA: uniform("uFaceA[0]"),
         faceB: uniform("uFaceB[0]"),
         faceC: uniform("uFaceC[0]"),
+        bounceLighting: uniform("uBounceLighting[0]"),
       };
       const postUniforms = {
         scene: gl.getUniformLocation(activePostProgram, "uScene"),
@@ -1119,13 +1243,17 @@ export default function MirrorChamber() {
 
       const geometry = buildIcosahedron();
       gl.uniform4fv(uniforms.planes, geometry.planes);
-      gl.uniform3fv(uniforms.edgeA, geometry.edgeA);
-      gl.uniform3fv(uniforms.edgeB, geometry.edgeB);
+      gl.uniform4fv(uniforms.edgeOrigins, geometry.edgeOrigins);
+      gl.uniform4fv(
+        uniforms.edgeDirections,
+        geometry.edgeDirections,
+      );
       gl.uniform3fv(uniforms.frameA, geometry.frameA);
       gl.uniform3fv(uniforms.frameB, geometry.frameB);
       gl.uniform3fv(uniforms.faceA, geometry.faceA);
       gl.uniform3fv(uniforms.faceB, geometry.faceB);
       gl.uniform3fv(uniforms.faceC, geometry.faceC);
+      gl.uniform4fv(uniforms.bounceLighting, BOUNCE_LIGHTING);
 
       const isCompact = window.matchMedia(
         "(max-width: 700px)",
@@ -1134,20 +1262,25 @@ export default function MirrorChamber() {
         controlsRef.current.zoom = 8.5;
         controlsRef.current.targetZoom = 8.5;
       }
-      gl.uniform1i(uniforms.bounces, isCompact ? 16 : 22);
+      gl.uniform1i(
+        uniforms.bounces,
+        Math.max(
+          1,
+          Math.min(
+            MAX_REFLECTIONS_PER_PIXEL,
+            Math.round(REFLECTIONS_PER_PIXEL),
+          ),
+        ),
+      );
 
       const resize = () => {
-        const pixelRatio = Math.min(
-          window.devicePixelRatio || 1,
-          isCompact ? 1.15 : 1.5,
-        );
         const width = Math.max(
           1,
-          Math.round(canvas.clientWidth * pixelRatio),
+          Math.round(canvas.clientWidth * RENDER_PIXEL_RATIO),
         );
         const height = Math.max(
           1,
-          Math.round(canvas.clientHeight * pixelRatio),
+          Math.round(canvas.clientHeight * RENDER_PIXEL_RATIO),
         );
         if (
           canvas.width !== width ||
@@ -1337,7 +1470,7 @@ export default function MirrorChamber() {
         if (postProgram) gl.deleteProgram(postProgram);
       };
     }
-  }, []);
+  }, [rendererReady]);
 
   return (
     <main className="experience">
