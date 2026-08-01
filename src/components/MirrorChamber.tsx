@@ -42,7 +42,6 @@ uniform vec4 uBounceLighting[${MIRROR_BOUNCES}];
 #define FAR 100.0
 
 const float LIGHT_CORE_RADIUS = 0.014;
-const float LIGHT_RAIL_RADIUS = 0.036;
 const float MIRROR_EDGE_INSET = 0.043;
 const float BOUNDING_RADIUS_SQUARED = 2.5921;
 
@@ -277,6 +276,7 @@ vec3 traceMirroredInterior(vec3 ro, vec3 rd, int entryFace) {
   vec4 entryEdgeDirectionA = uFaceEdgeDirectionA[entryFace];
   vec4 entryEdgeDirectionB = uFaceEdgeDirectionB[entryFace];
   vec4 entryEdgeDirectionC = uFaceEdgeDirectionC[entryFace];
+  float entryEdgeDistance = faceEdgeDistance(ro, entryFace);
 
   for (int bounce = 0; bounce < MIRROR_BOUNCES; bounce++) {
 
@@ -360,30 +360,18 @@ vec3 traceMirroredInterior(vec3 ro, vec3 rd, int entryFace) {
       break;
     }
 
-    if (nearestBar < LIGHT_RAIL_RADIUS) {
-      float railBevel = smoothstep(0.018, 0.032, nearestBar);
-      radiance += throughput * depthLoss *
-        vec3(0.010, 0.012, 0.014) * railBevel;
+    if (
+      bounce == 0 &&
+      entryEdgeDistance < MIRROR_EDGE_INSET
+    ) {
       break;
     }
 
     vec3 hit = ro + rd * wallT;
     float edgeDistance = faceEdgeDistance(hit, faceIndex);
     if (edgeDistance < MIRROR_EDGE_INSET) {
-      // This is a real break in the reflective panel, not a dark
-      // overlay. Rays that miss the edge-mounted rail terminate in
-      // the narrow structural channel between adjacent mirrors.
-      float channelBevel = smoothstep(
-        LIGHT_RAIL_RADIUS,
-        MIRROR_EDGE_INSET,
-        edgeDistance
-      );
-      radiance += throughput * depthLoss *
-        mix(
-          vec3(0.0025, 0.0030, 0.0035),
-          vec3(0.009, 0.010, 0.011),
-          channelBevel
-        );
+      // The inset is empty space between the light and mirror.
+      // It receives no artificial rail or channel surface.
       break;
     }
     float seam = exp(-edgeDistance * 85.0);
@@ -484,26 +472,22 @@ void main() {
     vec3 thinPanelTransmission = vec3(0.988, 0.993, 0.996);
     float coatingReflection = fresnel * 0.70;
     float transmission = (1.0 - fresnel) * 0.96;
-    color =
+    vec3 mirroredPanel =
       interior * thinPanelTransmission * transmission +
       externalReflection * coatingReflection;
-
     float edgeDistance = faceEdgeDistance(frontHit, nearFace);
-    float hardEdge = 1.0 - smoothstep(0.004, 0.014, edgeDistance);
-    float frameBevel =
-      smoothstep(0.002, 0.006, edgeDistance) *
-      (1.0 - smoothstep(0.010, 0.016, edgeDistance));
-    float softEdge = exp(-edgeDistance * 38.0);
-    vec3 edgeMetal =
-      vec3(0.0045, 0.005, 0.0055) +
-      externalReflection * (0.08 + frameBevel * 0.16) +
-      vec3(0.018, 0.020, 0.022) * frameBevel;
-    color = mix(color, edgeMetal, hardEdge * 0.95);
-    color += externalReflection * softEdge * 0.012;
+    float mirrorCoverage = smoothstep(
+      MIRROR_EDGE_INSET - 0.004,
+      MIRROR_EDGE_INSET,
+      edgeDistance
+    );
+    color = mix(interior, mirroredPanel, mirrorCoverage);
 
     float silhouette = pow(1.0 - facing, 3.0);
-    color += externalReflection * silhouette * 0.48;
-    color += vec3(0.018, 0.020, 0.021) * (1.0 - facing) * 0.34;
+    color += externalReflection * silhouette *
+      (0.48 * mirrorCoverage);
+    color += vec3(0.018, 0.020, 0.021) *
+      ((1.0 - facing) * 0.34 * mirrorCoverage);
 
     const float depthNear = 0.1;
     const float depthFar = FAR;
