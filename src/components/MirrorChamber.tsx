@@ -504,23 +504,18 @@ void main() {
     float facing = clamp(dot(-rd, frontNormal), 0.0, 1.0);
     float fresnel = 0.045 +
       (1.0 - 0.045) * pow(1.0 - facing, 5.0);
-    vec3 refracted = refract(rd, frontNormal, 1.0 / 1.47);
-    if (length(refracted) < 0.1) refracted = rd;
 
     vec3 insideOrigin = frontHit - frontNormal * 0.002;
     vec3 interior = traceMirroredInterior(
       insideOrigin,
-      normalize(refracted)
+      rd
     );
 
-    float glassDistance = max(farT - nearT, 0.0);
-    vec3 absorption = exp(
-      -vec3(0.055, 0.037, 0.020) * glassDistance
-    );
-    float coatingReflection = 0.15 + fresnel * 0.80;
-    float transmission = (1.0 - fresnel) * 0.78;
+    vec3 thinPanelTransmission = vec3(0.988, 0.993, 0.996);
+    float coatingReflection = fresnel * 0.70;
+    float transmission = (1.0 - fresnel) * 0.96;
     color =
-      interior * absorption * transmission +
+      interior * thinPanelTransmission * transmission +
       externalReflection * coatingReflection;
 
     float edgeDistance = faceEdgeDistance(frontHit, nearFace);
