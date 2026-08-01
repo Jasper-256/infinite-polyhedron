@@ -797,12 +797,14 @@ export default function MirrorChamber() {
   const [error, setError] = useState("");
   const controlsRef = useRef({
     dragging: false,
+    pointerId: null as number | null,
+    pointerTime: 0,
     x: 0,
     y: 0,
     yaw: 0.54,
     pitch: -0.16,
-    targetYaw: 0.54,
-    targetPitch: -0.16,
+    velocityYaw: 0,
+    velocityPitch: 0,
     zoom: 5.55,
     targetZoom: 5.55,
     lastInteraction: 0,
@@ -828,6 +830,7 @@ export default function MirrorChamber() {
     let animationFrame = 0;
     let disposed = false;
     const startedAt = performance.now();
+    let previousFrameAt = startedAt;
 
     try {
       const vertexShader = compileShader(
@@ -1020,11 +1023,19 @@ export default function MirrorChamber() {
         if (disposed || !sceneProgram || !postProgram) return;
         resize();
         const controls = controlsRef.current;
+        const deltaSeconds = Math.min(
+          Math.max((now - previousFrameAt) / 1000, 0),
+          0.05,
+        );
+        previousFrameAt = now;
 
-        controls.yaw +=
-          (controls.targetYaw - controls.yaw) * 0.07;
-        controls.pitch +=
-          (controls.targetPitch - controls.pitch) * 0.07;
+        if (!controls.dragging) {
+          controls.yaw += controls.velocityYaw * deltaSeconds;
+          controls.pitch += controls.velocityPitch * deltaSeconds;
+          const momentumDecay = Math.exp(-7.5 * deltaSeconds);
+          controls.velocityYaw *= momentumDecay;
+          controls.velocityPitch *= momentumDecay;
+        }
         controls.zoom +=
           (controls.targetZoom - controls.zoom) * 0.08;
 
@@ -1065,9 +1076,22 @@ export default function MirrorChamber() {
 
       const pointerDown = (event: PointerEvent) => {
         const controls = controlsRef.current;
+        if (
+          controls.pointerId !== null ||
+          !event.isPrimary ||
+          (event.pointerType === "mouse" && event.button !== 0)
+        ) {
+          return;
+        }
+
+        event.preventDefault();
         controls.dragging = true;
+        controls.pointerId = event.pointerId;
+        controls.pointerTime = event.timeStamp;
         controls.x = event.clientX;
         controls.y = event.clientY;
+        controls.velocityYaw = 0;
+        controls.velocityPitch = 0;
         controls.lastInteraction = performance.now();
         canvas.setPointerCapture(event.pointerId);
         canvas.classList.add("is-dragging");
@@ -1075,24 +1099,77 @@ export default function MirrorChamber() {
 
       const pointerMove = (event: PointerEvent) => {
         const controls = controlsRef.current;
-        if (!controls.dragging) return;
-        controls.targetYaw -=
-          (event.clientX - controls.x) * 0.005;
-        controls.targetPitch -=
-          (event.clientY - controls.y) * 0.005;
+        if (
+          !controls.dragging ||
+          controls.pointerId !== event.pointerId
+        ) {
+          return;
+        }
+
+        const deltaX = event.clientX - controls.x;
+        const deltaY = event.clientY - controls.y;
+        const shortestViewportEdge = Math.max(
+          600,
+          Math.min(canvas.clientWidth, canvas.clientHeight),
+        );
+        const radiansPerPixel =
+          (Math.PI * 1.5) / shortestViewportEdge;
+        const yawDelta = deltaX * radiansPerPixel;
+        const pitchDelta = deltaY * radiansPerPixel;
+        const elapsedSeconds = Math.max(
+          (event.timeStamp - controls.pointerTime) / 1000,
+          1 / 240,
+        );
+
+        // Move the object with the pointer instead of orbiting the
+        // camera against it. Updating the angles directly keeps the
+        // object under the cursor with no springy input lag.
+        controls.yaw += yawDelta;
+        controls.pitch += pitchDelta;
+        controls.velocityYaw = Math.max(
+          -4.5,
+          Math.min(
+            4.5,
+            controls.velocityYaw * 0.35 +
+              (yawDelta / elapsedSeconds) * 0.65,
+          ),
+        );
+        controls.velocityPitch = Math.max(
+          -4.5,
+          Math.min(
+            4.5,
+            controls.velocityPitch * 0.35 +
+              (pitchDelta / elapsedSeconds) * 0.65,
+          ),
+        );
         controls.x = event.clientX;
         controls.y = event.clientY;
+        controls.pointerTime = event.timeStamp;
         controls.lastInteraction = performance.now();
       };
 
       const pointerUp = (event: PointerEvent) => {
         const controls = controlsRef.current;
+        if (controls.pointerId !== event.pointerId) return;
+
+        if (event.timeStamp - controls.pointerTime > 80) {
+          controls.velocityYaw = 0;
+          controls.velocityPitch = 0;
+        }
         controls.dragging = false;
+        controls.pointerId = null;
         controls.lastInteraction = performance.now();
         if (canvas.hasPointerCapture(event.pointerId)) {
           canvas.releasePointerCapture(event.pointerId);
         }
         canvas.classList.remove("is-dragging");
+      };
+
+      const pointerCancel = (event: PointerEvent) => {
+        const controls = controlsRef.current;
+        controls.velocityYaw = 0;
+        controls.velocityPitch = 0;
+        pointerUp(event);
       };
 
       const wheel = (event: WheelEvent) => {
@@ -1112,7 +1189,7 @@ export default function MirrorChamber() {
       canvas.addEventListener("pointerdown", pointerDown);
       canvas.addEventListener("pointermove", pointerMove);
       canvas.addEventListener("pointerup", pointerUp);
-      canvas.addEventListener("pointercancel", pointerUp);
+      canvas.addEventListener("pointercancel", pointerCancel);
       canvas.addEventListener("wheel", wheel, {
         passive: false,
       });
@@ -1126,7 +1203,7 @@ export default function MirrorChamber() {
         canvas.removeEventListener("pointerup", pointerUp);
         canvas.removeEventListener(
           "pointercancel",
-          pointerUp,
+          pointerCancel,
         );
         canvas.removeEventListener("wheel", wheel);
         gl.deleteFramebuffer(framebuffer);
