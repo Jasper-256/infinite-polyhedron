@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 
 // Rendering quality controls. Keep these near the top so performance can be
 // tuned without changing the renderer itself.
-const RENDER_PIXEL_RATIO = 1;
+const RENDER_PIXEL_RATIO = 2;
 const REFLECTIONS_PER_PIXEL = 16;
 const POST_PROCESS_TEXTURE_SAMPLES_PER_PIXEL = 20;
 
@@ -36,8 +36,12 @@ uniform mat3 uRotation;
 uniform float uZoom;
 uniform int uBounces;
 uniform vec4 uPlanes[20];
-uniform vec4 uEdgeOrigins[30];
-uniform vec4 uEdgeDirections[30];
+uniform vec4 uFaceEdgeOriginA[20];
+uniform vec4 uFaceEdgeOriginB[20];
+uniform vec4 uFaceEdgeOriginC[20];
+uniform vec4 uFaceEdgeDirectionA[20];
+uniform vec4 uFaceEdgeDirectionB[20];
+uniform vec4 uFaceEdgeDirectionC[20];
 uniform vec3 uFrameA[30];
 uniform vec3 uFrameB[30];
 uniform vec3 uFaceA[20];
@@ -334,9 +338,15 @@ vec3 background(vec3 ro, vec3 rd) {
   return color;
 }
 
-vec3 traceMirroredInterior(vec3 ro, vec3 rd) {
+vec3 traceMirroredInterior(vec3 ro, vec3 rd, int entryFace) {
   vec3 radiance = vec3(0.0);
   vec3 throughput = vec3(1.0);
+  vec4 entryEdgeOriginA = uFaceEdgeOriginA[entryFace];
+  vec4 entryEdgeOriginB = uFaceEdgeOriginB[entryFace];
+  vec4 entryEdgeOriginC = uFaceEdgeOriginC[entryFace];
+  vec4 entryEdgeDirectionA = uFaceEdgeDirectionA[entryFace];
+  vec4 entryEdgeDirectionB = uFaceEdgeDirectionB[entryFace];
+  vec4 entryEdgeDirectionC = uFaceEdgeDirectionC[entryFace];
 
   for (int bounce = 0; bounce < MAX_BOUNCES; bounce++) {
     if (bounce >= uBounces) break;
@@ -349,13 +359,46 @@ vec3 traceMirroredInterior(vec3 ro, vec3 rd) {
     float nearestBarSquared = FAR * FAR;
     float nearestAlong = 0.0;
     vec3 rayEnd = ro + rd * wallT;
-    for (int edgeIndex = 0; edgeIndex < EDGE_COUNT; edgeIndex++) {
+    vec4 exitEdgeOriginA = uFaceEdgeOriginA[faceIndex];
+    vec4 exitEdgeOriginB = uFaceEdgeOriginB[faceIndex];
+    vec4 exitEdgeOriginC = uFaceEdgeOriginC[faceIndex];
+    vec4 exitEdgeDirectionA = uFaceEdgeDirectionA[faceIndex];
+    vec4 exitEdgeDirectionB = uFaceEdgeDirectionB[faceIndex];
+    vec4 exitEdgeDirectionC = uFaceEdgeDirectionC[faceIndex];
+    for (int candidate = 0; candidate < 6; candidate++) {
+      bool useEntryFace = candidate < 3;
+      int faceEdgeIndex = candidate - (useEntryFace ? 0 : 3);
+      vec4 edgeOrigin;
+      vec4 edgeDirection;
+      if (faceEdgeIndex == 0) {
+        edgeOrigin = useEntryFace
+          ? entryEdgeOriginA
+          : exitEdgeOriginA;
+        edgeDirection = useEntryFace
+          ? entryEdgeDirectionA
+          : exitEdgeDirectionA;
+      } else if (faceEdgeIndex == 1) {
+        edgeOrigin = useEntryFace
+          ? entryEdgeOriginB
+          : exitEdgeOriginB;
+        edgeDirection = useEntryFace
+          ? entryEdgeDirectionB
+          : exitEdgeDirectionB;
+      } else {
+        edgeOrigin = useEntryFace
+          ? entryEdgeOriginC
+          : exitEdgeOriginC;
+        edgeDirection = useEntryFace
+          ? entryEdgeDirectionC
+          : exitEdgeDirectionC;
+      }
+
       float rayAlong;
       float distanceToBarSquared = segmentSegmentDistanceSquared(
         ro,
         rayEnd,
-        uEdgeOrigins[edgeIndex],
-        uEdgeDirections[edgeIndex],
+        edgeOrigin,
+        edgeDirection,
         rayAlong
       );
       if (distanceToBarSquared < nearestBarSquared) {
@@ -432,6 +475,12 @@ vec3 traceMirroredInterior(vec3 ro, vec3 rd) {
 
     rd = reflect(rd, faceNormal);
     ro = hit - faceNormal * 0.0012;
+    entryEdgeOriginA = exitEdgeOriginA;
+    entryEdgeOriginB = exitEdgeOriginB;
+    entryEdgeOriginC = exitEdgeOriginC;
+    entryEdgeDirectionA = exitEdgeDirectionA;
+    entryEdgeDirectionB = exitEdgeDirectionB;
+    entryEdgeDirectionC = exitEdgeDirectionC;
   }
 
   return radiance;
@@ -529,7 +578,8 @@ void main() {
     vec3 insideOrigin = frontHit - frontNormal * 0.002;
     vec3 interior = traceMirroredInterior(
       insideOrigin,
-      rd
+      rd,
+      nearFace
     );
 
     vec3 thinPanelTransmission = vec3(0.988, 0.993, 0.996);
@@ -673,8 +723,12 @@ type Point = [number, number, number];
 
 type GeometryData = {
   planes: Float32Array;
-  edgeOrigins: Float32Array;
-  edgeDirections: Float32Array;
+  faceEdgeOriginA: Float32Array;
+  faceEdgeOriginB: Float32Array;
+  faceEdgeOriginC: Float32Array;
+  faceEdgeDirectionA: Float32Array;
+  faceEdgeDirectionB: Float32Array;
+  faceEdgeDirectionC: Float32Array;
   frameA: Float32Array;
   frameB: Float32Array;
   faceA: Float32Array;
@@ -829,6 +883,8 @@ function buildIcosahedron(): GeometryData {
 
   const edgeOrigins: number[] = [];
   const edgeDirections: number[] = [];
+  const edgeKeys: string[] = [];
+  const edgeIndexByKey = new Map<string, number>();
   const frameA: number[] = [];
   const frameB: number[] = [];
   for (let i = 0; i < vertices.length; i++) {
@@ -861,22 +917,69 @@ function buildIcosahedron(): GeometryData {
           direction[0] * direction[0] +
           direction[1] * direction[1] +
           direction[2] * direction[2];
-        edgeOrigins.push(
-          ...trimmedA,
-          1 / lengthSquared,
-        );
-        edgeDirections.push(
-          ...direction,
-          lengthSquared,
-        );
+        const edgeKey = `${i}:${j}`;
+        edgeOrigins.push(...trimmedA, 1 / lengthSquared);
+        edgeDirections.push(...direction, lengthSquared);
+        edgeIndexByKey.set(edgeKey, edgeKeys.length);
+        edgeKeys.push(edgeKey);
       }
     }
   }
 
+  const faceEdgeOriginA: number[] = [];
+  const faceEdgeOriginB: number[] = [];
+  const faceEdgeOriginC: number[] = [];
+  const faceEdgeDirectionA: number[] = [];
+  const faceEdgeDirectionB: number[] = [];
+  const faceEdgeDirectionC: number[] = [];
+  const appendFaceEdge = (
+    first: number,
+    second: number,
+    origins: number[],
+    directions: number[],
+  ) => {
+    const low = Math.min(first, second);
+    const high = Math.max(first, second);
+    const edgeIndex = edgeIndexByKey.get(`${low}:${high}`);
+    if (edgeIndex === undefined) {
+      throw new Error("Icosahedron face is missing an edge.");
+    }
+    origins.push(
+      ...edgeOrigins.slice(edgeIndex * 4, edgeIndex * 4 + 4),
+    );
+    directions.push(
+      ...edgeDirections.slice(edgeIndex * 4, edgeIndex * 4 + 4),
+    );
+  };
+  for (const [a, b, c] of faces) {
+    appendFaceEdge(
+      a,
+      b,
+      faceEdgeOriginA,
+      faceEdgeDirectionA,
+    );
+    appendFaceEdge(
+      b,
+      c,
+      faceEdgeOriginB,
+      faceEdgeDirectionB,
+    );
+    appendFaceEdge(
+      c,
+      a,
+      faceEdgeOriginC,
+      faceEdgeDirectionC,
+    );
+  }
+
   return {
     planes: new Float32Array(planes),
-    edgeOrigins: new Float32Array(edgeOrigins),
-    edgeDirections: new Float32Array(edgeDirections),
+    faceEdgeOriginA: new Float32Array(faceEdgeOriginA),
+    faceEdgeOriginB: new Float32Array(faceEdgeOriginB),
+    faceEdgeOriginC: new Float32Array(faceEdgeOriginC),
+    faceEdgeDirectionA: new Float32Array(faceEdgeDirectionA),
+    faceEdgeDirectionB: new Float32Array(faceEdgeDirectionB),
+    faceEdgeDirectionC: new Float32Array(faceEdgeDirectionC),
     frameA: new Float32Array(frameA),
     frameB: new Float32Array(frameB),
     faceA: new Float32Array(faceA),
@@ -1196,8 +1299,18 @@ export default function MirrorChamber() {
         zoom: uniform("uZoom"),
         bounces: uniform("uBounces"),
         planes: uniform("uPlanes[0]"),
-        edgeOrigins: uniform("uEdgeOrigins[0]"),
-        edgeDirections: uniform("uEdgeDirections[0]"),
+        faceEdgeOriginA: uniform("uFaceEdgeOriginA[0]"),
+        faceEdgeOriginB: uniform("uFaceEdgeOriginB[0]"),
+        faceEdgeOriginC: uniform("uFaceEdgeOriginC[0]"),
+        faceEdgeDirectionA: uniform(
+          "uFaceEdgeDirectionA[0]",
+        ),
+        faceEdgeDirectionB: uniform(
+          "uFaceEdgeDirectionB[0]",
+        ),
+        faceEdgeDirectionC: uniform(
+          "uFaceEdgeDirectionC[0]",
+        ),
         frameA: uniform("uFrameA[0]"),
         frameB: uniform("uFrameB[0]"),
         faceA: uniform("uFaceA[0]"),
@@ -1249,10 +1362,29 @@ export default function MirrorChamber() {
 
       const geometry = buildIcosahedron();
       gl.uniform4fv(uniforms.planes, geometry.planes);
-      gl.uniform4fv(uniforms.edgeOrigins, geometry.edgeOrigins);
       gl.uniform4fv(
-        uniforms.edgeDirections,
-        geometry.edgeDirections,
+        uniforms.faceEdgeOriginA,
+        geometry.faceEdgeOriginA,
+      );
+      gl.uniform4fv(
+        uniforms.faceEdgeOriginB,
+        geometry.faceEdgeOriginB,
+      );
+      gl.uniform4fv(
+        uniforms.faceEdgeOriginC,
+        geometry.faceEdgeOriginC,
+      );
+      gl.uniform4fv(
+        uniforms.faceEdgeDirectionA,
+        geometry.faceEdgeDirectionA,
+      );
+      gl.uniform4fv(
+        uniforms.faceEdgeDirectionB,
+        geometry.faceEdgeDirectionB,
+      );
+      gl.uniform4fv(
+        uniforms.faceEdgeDirectionC,
+        geometry.faceEdgeDirectionC,
       );
       gl.uniform3fv(uniforms.frameA, geometry.frameA);
       gl.uniform3fv(uniforms.frameB, geometry.frameB);
@@ -1490,6 +1622,7 @@ export default function MirrorChamber() {
         caught instanceof Error
           ? caught.message
           : "The renderer could not start.";
+      console.error("[MirrorChamber renderer]", message);
       setError(message);
       return () => {
         disposed = true;
