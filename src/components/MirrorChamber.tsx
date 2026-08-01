@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import * as THREE from "three";
 
 // Rendering quality controls. Keep these near the top so performance can be
 // tuned without changing the renderer itself.
@@ -15,18 +16,16 @@ const REFERENCE_FRAME_DURATION_MS = 1000 / 60;
 const ROTATION_FOLLOW_PER_REFERENCE_FRAME = 0.07;
 const FRAME_RADIUS = 0.047;
 
-const VERTEX_SHADER = `#version 300 es
-precision highp float;
-in vec2 aPosition;
+const VERTEX_SHADER = `precision highp float;
+in vec2 position;
 out vec2 vUv;
 
 void main() {
-  vUv = aPosition * 0.5 + 0.5;
-  gl_Position = vec4(aPosition, 0.0, 1.0);
+  vUv = position * 0.5 + 0.5;
+  gl_Position = vec4(position, 0.0, 1.0);
 }`;
 
-const FRAGMENT_SHADER = `#version 300 es
-precision highp float;
+const FRAGMENT_SHADER = `precision highp float;
 
 out vec4 outColor;
 in vec2 vUv;
@@ -539,11 +538,10 @@ void main() {
   gl_FragDepth = sceneDepth;
 }`;
 
-const FRAME_VERTEX_SHADER = `#version 300 es
-precision highp float;
+const FRAME_VERTEX_SHADER = `precision highp float;
 
-in vec3 aFramePosition;
-in vec3 aFrameNormal;
+in vec3 position;
+in vec3 normal;
 
 uniform vec2 uResolution;
 uniform mat3 uRotation;
@@ -554,7 +552,7 @@ out vec3 vWorldPosition;
 out vec3 vWorldNormal;
 
 void main() {
-  vec3 worldPosition = uRotation * aFramePosition;
+  vec3 worldPosition = uRotation * position;
   vec3 cameraPosition =
     worldPosition - vec3(0.0, 0.10, uZoom);
   float aspect = uResolution.x / uResolution.y;
@@ -574,13 +572,12 @@ void main() {
     depthA * cameraPosition.z + depthB,
     clipW
   );
-  vObjectPosition = aFramePosition;
+  vObjectPosition = position;
   vWorldPosition = worldPosition;
-  vWorldNormal = uRotation * aFrameNormal;
+  vWorldNormal = uRotation * normal;
 }`;
 
-const FRAME_FRAGMENT_SHADER = `#version 300 es
-precision highp float;
+const FRAME_FRAGMENT_SHADER = `precision highp float;
 
 in vec3 vObjectPosition;
 in vec3 vWorldPosition;
@@ -669,8 +666,7 @@ void main() {
   outColor = vec4(color, 1.0);
 }`;
 
-const POST_FRAGMENT_SHADER = `#version 300 es
-precision highp float;
+const POST_FRAGMENT_SHADER = `precision highp float;
 
 #define TEXTURE_SAMPLES_PER_PIXEL ${Math.max(
   1,
@@ -1177,24 +1173,6 @@ function buildIcosahedron(): GeometryData {
   };
 }
 
-function compileShader(
-  gl: WebGL2RenderingContext,
-  type: number,
-  source: string,
-): WebGLShader {
-  const shader = gl.createShader(type);
-  if (!shader) throw new Error("Unable to create shader.");
-  gl.shaderSource(shader, source);
-  gl.compileShader(shader);
-  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-    const message =
-      gl.getShaderInfoLog(shader) ?? "Unknown shader error.";
-    gl.deleteShader(shader);
-    throw new Error(message);
-  }
-  return shader;
-}
-
 type Quaternion = readonly [
   number,
   number,
@@ -1396,238 +1374,204 @@ export default function MirrorChamber() {
       return;
     }
 
-    let sceneProgram: WebGLProgram | null = null;
-    let frameProgram: WebGLProgram | null = null;
-    let postProgram: WebGLProgram | null = null;
+    let renderer: THREE.WebGLRenderer | null = null;
     let animationFrame = 0;
     let disposed = false;
-    const startedAt = performance.now();
-      let previousRenderAt = startedAt;
-      let fpsSampleStartedAt = startedAt;
-      let fpsFrameCount = 0;
 
     try {
-      const vertexShader = compileShader(
-        gl,
-        gl.VERTEX_SHADER,
-        VERTEX_SHADER,
-      );
-      const fragmentShader = compileShader(
-        gl,
-        gl.FRAGMENT_SHADER,
-        FRAGMENT_SHADER,
-      );
-      const frameVertexShader = compileShader(
-        gl,
-        gl.VERTEX_SHADER,
-        FRAME_VERTEX_SHADER,
-      );
-      const frameFragmentShader = compileShader(
-        gl,
-        gl.FRAGMENT_SHADER,
-        FRAME_FRAGMENT_SHADER,
-      );
-      const postFragmentShader = compileShader(
-        gl,
-        gl.FRAGMENT_SHADER,
-        POST_FRAGMENT_SHADER,
-      );
-      sceneProgram = gl.createProgram();
-      frameProgram = gl.createProgram();
-      postProgram = gl.createProgram();
-      if (!sceneProgram || !frameProgram || !postProgram) {
-        throw new Error("Unable to create WebGL programs.");
-      }
-      const activeSceneProgram = sceneProgram;
-      const activeFrameProgram = frameProgram;
-      const activePostProgram = postProgram;
-      gl.attachShader(activeSceneProgram, vertexShader);
-      gl.attachShader(activeSceneProgram, fragmentShader);
-      gl.linkProgram(activeSceneProgram);
-      gl.attachShader(activeFrameProgram, frameVertexShader);
-      gl.attachShader(activeFrameProgram, frameFragmentShader);
-      gl.linkProgram(activeFrameProgram);
-      gl.attachShader(activePostProgram, vertexShader);
-      gl.attachShader(activePostProgram, postFragmentShader);
-      gl.linkProgram(activePostProgram);
-      gl.deleteShader(vertexShader);
-      gl.deleteShader(fragmentShader);
-      gl.deleteShader(frameVertexShader);
-      gl.deleteShader(frameFragmentShader);
-      gl.deleteShader(postFragmentShader);
-
-      if (!gl.getProgramParameter(activeSceneProgram, gl.LINK_STATUS)) {
+      renderer = new THREE.WebGLRenderer({
+        canvas,
+        context: gl,
+        alpha: false,
+        antialias: false,
+        depth: false,
+        powerPreference: "high-performance",
+      });
+      const activeRenderer = renderer;
+      activeRenderer.autoClear = false;
+      activeRenderer.sortObjects = false;
+      activeRenderer.outputColorSpace = THREE.LinearSRGBColorSpace;
+      activeRenderer.debug.onShaderError = (
+        shaderGl,
+        program,
+        vertexShader,
+        fragmentShader,
+      ) => {
+        const messages = [
+          shaderGl.getProgramInfoLog(program),
+          shaderGl.getShaderInfoLog(vertexShader),
+          shaderGl.getShaderInfoLog(fragmentShader),
+        ].filter(Boolean);
         throw new Error(
-          gl.getProgramInfoLog(activeSceneProgram) ??
-            "Unable to link scene shaders.",
-        );
-      }
-      if (!gl.getProgramParameter(activePostProgram, gl.LINK_STATUS)) {
-        throw new Error(
-          gl.getProgramInfoLog(activePostProgram) ??
-            "Unable to link post-processing shaders.",
-        );
-      }
-      if (!gl.getProgramParameter(activeFrameProgram, gl.LINK_STATUS)) {
-        throw new Error(
-          gl.getProgramInfoLog(activeFrameProgram) ??
-            "Unable to link frame shaders.",
-        );
-      }
-      const fullscreenBuffer = gl.createBuffer();
-      gl.bindBuffer(gl.ARRAY_BUFFER, fullscreenBuffer);
-      gl.bufferData(
-        gl.ARRAY_BUFFER,
-        new Float32Array([-1, -1, 3, -1, -1, 3]),
-        gl.STATIC_DRAW,
-      );
-      const scenePosition = gl.getAttribLocation(
-        activeSceneProgram,
-        "aPosition",
-      );
-      const postPosition = gl.getAttribLocation(
-        activePostProgram,
-        "aPosition",
-      );
-      const bindFullscreenPosition = (position: number) => {
-        gl.bindBuffer(gl.ARRAY_BUFFER, fullscreenBuffer);
-        gl.enableVertexAttribArray(position);
-        gl.vertexAttribPointer(
-          position,
-          2,
-          gl.FLOAT,
-          false,
-          0,
-          0,
+          messages.join("\n") || "Unable to compile Three.js shaders.",
         );
       };
-      gl.useProgram(activeSceneProgram);
-
-      const uniform = (name: string) =>
-        gl.getUniformLocation(activeSceneProgram, name);
-      const uniforms = {
-        resolution: uniform("uResolution"),
-        time: uniform("uTime"),
-        rotation: uniform("uRotation"),
-        zoom: uniform("uZoom"),
-        bounces: uniform("uBounces"),
-        planes: uniform("uPlanes[0]"),
-        faceEdgeOriginA: uniform("uFaceEdgeOriginA[0]"),
-        faceEdgeOriginB: uniform("uFaceEdgeOriginB[0]"),
-        faceEdgeOriginC: uniform("uFaceEdgeOriginC[0]"),
-        faceEdgeDirectionA: uniform(
-          "uFaceEdgeDirectionA[0]",
-        ),
-        faceEdgeDirectionB: uniform(
-          "uFaceEdgeDirectionB[0]",
-        ),
-        faceEdgeDirectionC: uniform(
-          "uFaceEdgeDirectionC[0]",
-        ),
-        bounceLighting: uniform("uBounceLighting[0]"),
-      };
-      const framePosition = gl.getAttribLocation(
-        activeFrameProgram,
-        "aFramePosition",
-      );
-      const frameNormal = gl.getAttribLocation(
-        activeFrameProgram,
-        "aFrameNormal",
-      );
-      const frameUniforms = {
-        resolution: gl.getUniformLocation(
-          activeFrameProgram,
-          "uResolution",
-        ),
-        time: gl.getUniformLocation(activeFrameProgram, "uTime"),
-        rotation: gl.getUniformLocation(
-          activeFrameProgram,
-          "uRotation",
-        ),
-        zoom: gl.getUniformLocation(activeFrameProgram, "uZoom"),
-      };
-      const postUniforms = {
-        scene: gl.getUniformLocation(activePostProgram, "uScene"),
-        texel: gl.getUniformLocation(activePostProgram, "uTexel"),
-        zoom: gl.getUniformLocation(activePostProgram, "uZoom"),
-      };
-      const rotationMatrix = new Float32Array(9);
-
-      const renderTexture = gl.createTexture();
-      const framebuffer = gl.createFramebuffer();
-      const depthRenderbuffer = gl.createRenderbuffer();
-      if (!renderTexture || !framebuffer || !depthRenderbuffer) {
-        throw new Error("Unable to create the photographic render target.");
-      }
-      gl.bindTexture(gl.TEXTURE_2D, renderTexture);
-      gl.texParameteri(
-        gl.TEXTURE_2D,
-        gl.TEXTURE_MIN_FILTER,
-        gl.LINEAR,
-      );
-      gl.texParameteri(
-        gl.TEXTURE_2D,
-        gl.TEXTURE_MAG_FILTER,
-        gl.LINEAR,
-      );
-      gl.texParameteri(
-        gl.TEXTURE_2D,
-        gl.TEXTURE_WRAP_S,
-        gl.CLAMP_TO_EDGE,
-      );
-      gl.texParameteri(
-        gl.TEXTURE_2D,
-        gl.TEXTURE_WRAP_T,
-        gl.CLAMP_TO_EDGE,
-      );
-      gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
-      gl.framebufferTexture2D(
-        gl.FRAMEBUFFER,
-        gl.COLOR_ATTACHMENT0,
-        gl.TEXTURE_2D,
-        renderTexture,
-        0,
-      );
-      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
       const geometry = buildIcosahedron();
-      const frameBuffer = gl.createBuffer();
-      if (!frameBuffer) {
-        throw new Error("Unable to create the frame geometry buffer.");
-      }
-      gl.bindBuffer(gl.ARRAY_BUFFER, frameBuffer);
-      gl.bufferData(
-        gl.ARRAY_BUFFER,
+      const fullscreenGeometry = new THREE.BufferGeometry();
+      fullscreenGeometry.setAttribute(
+        "position",
+        new THREE.BufferAttribute(
+          new Float32Array([-1, -1, 3, -1, -1, 3]),
+          2,
+        ),
+      );
+
+      const frameGeometry = new THREE.BufferGeometry();
+      const frameInterleaved = new THREE.InterleavedBuffer(
         geometry.frameVertices,
-        gl.STATIC_DRAW,
+        6,
       );
-      const frameVertexCount = geometry.frameVertices.length / 6;
-      gl.uniform4fv(uniforms.planes, geometry.planes);
-      gl.uniform4fv(
-        uniforms.faceEdgeOriginA,
-        geometry.faceEdgeOriginA,
+      frameGeometry.setAttribute(
+        "position",
+        new THREE.InterleavedBufferAttribute(
+          frameInterleaved,
+          3,
+          0,
+          false,
+        ),
       );
-      gl.uniform4fv(
-        uniforms.faceEdgeOriginB,
-        geometry.faceEdgeOriginB,
+      frameGeometry.setAttribute(
+        "normal",
+        new THREE.InterleavedBufferAttribute(
+          frameInterleaved,
+          3,
+          3,
+          false,
+        ),
       );
-      gl.uniform4fv(
-        uniforms.faceEdgeOriginC,
-        geometry.faceEdgeOriginC,
+      frameGeometry.setDrawRange(
+        0,
+        geometry.frameVertices.length / 6,
       );
-      gl.uniform4fv(
-        uniforms.faceEdgeDirectionA,
-        geometry.faceEdgeDirectionA,
+
+      const rotationMatrix = new Float32Array(9);
+      const sceneRotation = new THREE.Matrix3();
+      const frameRotation = new THREE.Matrix3();
+      const sceneResolution = new THREE.Vector2();
+      const frameResolution = new THREE.Vector2();
+      const postTexel = new THREE.Vector2();
+      const reflectionCount = Math.max(
+        1,
+        Math.min(
+          MAX_REFLECTIONS_PER_PIXEL,
+          Math.round(REFLECTIONS_PER_PIXEL),
+        ),
       );
-      gl.uniform4fv(
-        uniforms.faceEdgeDirectionB,
-        geometry.faceEdgeDirectionB,
+
+      const sceneMaterial = new THREE.RawShaderMaterial({
+        glslVersion: THREE.GLSL3,
+        vertexShader: VERTEX_SHADER,
+        fragmentShader: FRAGMENT_SHADER,
+        uniforms: {
+          uResolution: { value: sceneResolution },
+          uTime: { value: 0 },
+          uRotation: { value: sceneRotation },
+          uZoom: { value: 5.55 },
+          uBounces: { value: reflectionCount },
+          uPlanes: { value: geometry.planes },
+          uFaceEdgeOriginA: {
+            value: geometry.faceEdgeOriginA,
+          },
+          uFaceEdgeOriginB: {
+            value: geometry.faceEdgeOriginB,
+          },
+          uFaceEdgeOriginC: {
+            value: geometry.faceEdgeOriginC,
+          },
+          uFaceEdgeDirectionA: {
+            value: geometry.faceEdgeDirectionA,
+          },
+          uFaceEdgeDirectionB: {
+            value: geometry.faceEdgeDirectionB,
+          },
+          uFaceEdgeDirectionC: {
+            value: geometry.faceEdgeDirectionC,
+          },
+          uBounceLighting: { value: BOUNCE_LIGHTING },
+        },
+        depthTest: true,
+        depthWrite: true,
+        depthFunc: THREE.AlwaysDepth,
+        blending: THREE.NoBlending,
+        toneMapped: false,
+      });
+
+      const frameMaterial = new THREE.RawShaderMaterial({
+        glslVersion: THREE.GLSL3,
+        vertexShader: FRAME_VERTEX_SHADER,
+        fragmentShader: FRAME_FRAGMENT_SHADER,
+        uniforms: {
+          uResolution: { value: frameResolution },
+          uTime: { value: 0 },
+          uRotation: { value: frameRotation },
+          uZoom: { value: 5.55 },
+        },
+        depthTest: true,
+        depthWrite: true,
+        depthFunc: THREE.LessDepth,
+        side: THREE.DoubleSide,
+        blending: THREE.NoBlending,
+        toneMapped: false,
+      });
+
+      const postMaterial = new THREE.RawShaderMaterial({
+        glslVersion: THREE.GLSL3,
+        vertexShader: VERTEX_SHADER,
+        fragmentShader: POST_FRAGMENT_SHADER,
+        uniforms: {
+          uScene: { value: null },
+          uTexel: { value: postTexel },
+          uZoom: { value: 5.55 },
+        },
+        depthTest: false,
+        depthWrite: false,
+        blending: THREE.NoBlending,
+        toneMapped: false,
+      });
+
+      const sceneMesh = new THREE.Mesh(
+        fullscreenGeometry,
+        sceneMaterial,
       );
-      gl.uniform4fv(
-        uniforms.faceEdgeDirectionC,
-        geometry.faceEdgeDirectionC,
+      const frameMesh = new THREE.Mesh(
+        frameGeometry,
+        frameMaterial,
       );
-      gl.uniform4fv(uniforms.bounceLighting, BOUNCE_LIGHTING);
+      const postMesh = new THREE.Mesh(
+        fullscreenGeometry,
+        postMaterial,
+      );
+      for (const mesh of [sceneMesh, frameMesh, postMesh]) {
+        mesh.frustumCulled = false;
+        mesh.matrixAutoUpdate = false;
+      }
+
+      const scenePass = new THREE.Scene();
+      const framePass = new THREE.Scene();
+      const postPass = new THREE.Scene();
+      scenePass.matrixWorldAutoUpdate = false;
+      framePass.matrixWorldAutoUpdate = false;
+      postPass.matrixWorldAutoUpdate = false;
+      scenePass.add(sceneMesh);
+      framePass.add(frameMesh);
+      postPass.add(postMesh);
+
+      const camera = new THREE.Camera();
+      camera.matrixAutoUpdate = false;
+      camera.matrixWorldAutoUpdate = false;
+
+      const renderTarget = new THREE.WebGLRenderTarget(1, 1, {
+        minFilter: THREE.LinearFilter,
+        magFilter: THREE.LinearFilter,
+        format: THREE.RGBAFormat,
+        type: THREE.UnsignedByteType,
+        depthBuffer: true,
+        stencilBuffer: false,
+      });
+      renderTarget.texture.generateMipmaps = false;
+      renderTarget.texture.colorSpace = THREE.NoColorSpace;
+      postMaterial.uniforms.uScene.value = renderTarget.texture;
 
       const isCompact = window.matchMedia(
         "(max-width: 700px)",
@@ -1636,17 +1580,9 @@ export default function MirrorChamber() {
         controlsRef.current.zoom = 8.5;
         controlsRef.current.targetZoom = 8.5;
       }
-      gl.uniform1i(
-        uniforms.bounces,
-        Math.max(
-          1,
-          Math.min(
-            MAX_REFLECTIONS_PER_PIXEL,
-            Math.round(REFLECTIONS_PER_PIXEL),
-          ),
-        ),
-      );
 
+      let renderWidth = 0;
+      let renderHeight = 0;
       const resize = () => {
         const width = Math.max(
           1,
@@ -1656,69 +1592,38 @@ export default function MirrorChamber() {
           1,
           Math.round(canvas.clientHeight * RENDER_PIXEL_RATIO),
         );
-        if (
-          canvas.width !== width ||
-          canvas.height !== height
-        ) {
-          canvas.width = width;
-          canvas.height = height;
-          gl.bindTexture(gl.TEXTURE_2D, renderTexture);
-          gl.texImage2D(
-            gl.TEXTURE_2D,
-            0,
-            gl.RGBA,
-            width,
-            height,
-            0,
-            gl.RGBA,
-            gl.UNSIGNED_BYTE,
-            null,
-          );
-          gl.bindTexture(gl.TEXTURE_2D, null);
-          gl.bindRenderbuffer(
-            gl.RENDERBUFFER,
-            depthRenderbuffer,
-          );
-          gl.renderbufferStorage(
-            gl.RENDERBUFFER,
-            gl.DEPTH_COMPONENT24,
-            width,
-            height,
-          );
-          gl.bindRenderbuffer(gl.RENDERBUFFER, null);
-          gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
-          gl.framebufferRenderbuffer(
-            gl.FRAMEBUFFER,
-            gl.DEPTH_ATTACHMENT,
-            gl.RENDERBUFFER,
-            depthRenderbuffer,
-          );
-          gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-          gl.viewport(0, 0, width, height);
-        }
+        if (width === renderWidth && height === renderHeight) return;
+
+        renderWidth = width;
+        renderHeight = height;
+        activeRenderer.setSize(width, height, false);
+        renderTarget.setSize(width, height);
+        sceneResolution.set(width, height);
+        frameResolution.set(width, height);
+        postTexel.set(1 / width, 1 / height);
       };
 
+      const startedAt = performance.now();
+      let previousRenderAt = startedAt;
+      let fpsSampleStartedAt = startedAt;
+      let fpsFrameCount = 0;
+
       const render = (now: number) => {
-        if (
-          disposed ||
-          !sceneProgram ||
-          !frameProgram ||
-          !postProgram
-        ) {
-          return;
-        }
+        if (disposed) return;
+
         fpsFrameCount += 1;
         const fpsSampleDuration = now - fpsSampleStartedAt;
         if (fpsSampleDuration >= 500) {
           if (fpsCounterRef.current) {
             fpsCounterRef.current.textContent =
-              `${Math.round(
+              Math.round(
                 (fpsFrameCount * 1000) / fpsSampleDuration,
-              )} FPS`;
+              ).toString() + " FPS";
           }
           fpsSampleStartedAt = now;
           fpsFrameCount = 0;
         }
+
         resize();
         const controls = controlsRef.current;
         const elapsedFrames =
@@ -1738,88 +1643,27 @@ export default function MirrorChamber() {
         );
         controls.zoom +=
           (controls.targetZoom - controls.zoom) * 0.08;
-        const elapsedSeconds = (now - startedAt) / 1000;
 
-        gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
-        gl.viewport(0, 0, canvas.width, canvas.height);
-        gl.enable(gl.DEPTH_TEST);
-        gl.depthMask(true);
-        gl.depthFunc(gl.ALWAYS);
-        gl.clearDepth(1);
-        gl.clear(gl.DEPTH_BUFFER_BIT);
-        gl.useProgram(activeSceneProgram);
-        bindFullscreenPosition(scenePosition);
-        gl.uniform2f(
-          uniforms.resolution,
-          canvas.width,
-          canvas.height,
-        );
-        gl.uniform1f(
-          uniforms.time,
-          elapsedSeconds,
-        );
+        const elapsedSeconds = (now - startedAt) / 1000;
         writeQuaternionMatrix(
           controls.rotation,
           rotationMatrix,
         );
-        gl.uniformMatrix3fv(
-          uniforms.rotation,
-          false,
-          rotationMatrix,
-        );
-        gl.uniform1f(uniforms.zoom, controls.zoom);
-        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        sceneRotation.fromArray(rotationMatrix);
+        frameRotation.fromArray(rotationMatrix);
+        sceneMaterial.uniforms.uTime.value = elapsedSeconds;
+        sceneMaterial.uniforms.uZoom.value = controls.zoom;
+        frameMaterial.uniforms.uTime.value = elapsedSeconds;
+        frameMaterial.uniforms.uZoom.value = controls.zoom;
+        postMaterial.uniforms.uZoom.value = controls.zoom;
 
-        gl.depthFunc(gl.LESS);
-        gl.useProgram(activeFrameProgram);
-        gl.bindBuffer(gl.ARRAY_BUFFER, frameBuffer);
-        gl.enableVertexAttribArray(framePosition);
-        gl.vertexAttribPointer(
-          framePosition,
-          3,
-          gl.FLOAT,
-          false,
-          6 * Float32Array.BYTES_PER_ELEMENT,
-          0,
-        );
-        gl.enableVertexAttribArray(frameNormal);
-        gl.vertexAttribPointer(
-          frameNormal,
-          3,
-          gl.FLOAT,
-          false,
-          6 * Float32Array.BYTES_PER_ELEMENT,
-          3 * Float32Array.BYTES_PER_ELEMENT,
-        );
-        gl.uniform2f(
-          frameUniforms.resolution,
-          canvas.width,
-          canvas.height,
-        );
-        gl.uniform1f(frameUniforms.time, elapsedSeconds);
-        gl.uniformMatrix3fv(
-          frameUniforms.rotation,
-          false,
-          rotationMatrix,
-        );
-        gl.uniform1f(frameUniforms.zoom, controls.zoom);
-        gl.drawArrays(gl.TRIANGLES, 0, frameVertexCount);
+        activeRenderer.setRenderTarget(renderTarget);
+        activeRenderer.clear(true, true, false);
+        activeRenderer.render(scenePass, camera);
+        activeRenderer.render(framePass, camera);
 
-        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-        gl.viewport(0, 0, canvas.width, canvas.height);
-        gl.disable(gl.DEPTH_TEST);
-        gl.useProgram(activePostProgram);
-        bindFullscreenPosition(postPosition);
-        gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, renderTexture);
-        gl.uniform1i(postUniforms.scene, 0);
-        gl.uniform2f(
-          postUniforms.texel,
-          1 / canvas.width,
-          1 / canvas.height,
-        );
-        gl.uniform1f(postUniforms.zoom, controls.zoom);
-        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        activeRenderer.setRenderTarget(null);
+        activeRenderer.render(postPass, camera);
         animationFrame = window.requestAnimationFrame(render);
       };
 
@@ -1858,9 +1702,6 @@ export default function MirrorChamber() {
           deltaX * 0.005,
           deltaY * 0.005,
         );
-
-        // Pre-multiplication applies each drag around the camera's
-        // screen axes, never around axes already rotated with the object.
         controls.targetRotation = normalizeQuaternion(
           multiplyQuaternions(
             dragRotation,
@@ -1914,34 +1755,26 @@ export default function MirrorChamber() {
         canvas.removeEventListener("pointerdown", pointerDown);
         canvas.removeEventListener("pointermove", pointerMove);
         canvas.removeEventListener("pointerup", pointerUp);
-        canvas.removeEventListener(
-          "pointercancel",
-          pointerUp,
-        );
+        canvas.removeEventListener("pointercancel", pointerUp);
         canvas.removeEventListener("wheel", wheel);
-        gl.deleteBuffer(fullscreenBuffer);
-        gl.deleteBuffer(frameBuffer);
-        gl.deleteRenderbuffer(depthRenderbuffer);
-        gl.deleteFramebuffer(framebuffer);
-        gl.deleteTexture(renderTexture);
-        gl.deleteProgram(activeSceneProgram);
-        gl.deleteProgram(activeFrameProgram);
-        gl.deleteProgram(activePostProgram);
+        sceneMaterial.dispose();
+        frameMaterial.dispose();
+        postMaterial.dispose();
+        fullscreenGeometry.dispose();
+        frameGeometry.dispose();
+        renderTarget.dispose();
+        activeRenderer.dispose();
       };
     } catch (caught) {
+      disposed = true;
+      window.cancelAnimationFrame(animationFrame);
+      renderer?.dispose();
       const message =
         caught instanceof Error
           ? caught.message
-          : "The renderer could not start.";
+          : "The Three.js renderer could not start.";
       console.error("[MirrorChamber renderer]", message);
       setError(message);
-      return () => {
-        disposed = true;
-        window.cancelAnimationFrame(animationFrame);
-        if (sceneProgram) gl.deleteProgram(sceneProgram);
-        if (frameProgram) gl.deleteProgram(frameProgram);
-        if (postProgram) gl.deleteProgram(postProgram);
-      };
     }
   }, [rendererReady]);
 
