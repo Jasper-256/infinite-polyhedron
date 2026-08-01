@@ -1060,6 +1060,7 @@ const INITIAL_ROTATION = multiplyQuaternions(
 
 export default function MirrorChamber() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const fpsCounterRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState("");
   const [rendererReady, setRendererReady] = useState(false);
   const controlsRef = useRef({
@@ -1109,6 +1110,8 @@ export default function MirrorChamber() {
     let disposed = false;
     const startedAt = performance.now();
     let previousRenderAt = startedAt;
+    let fpsSampleStartedAt = startedAt;
+    let fpsFrameCount = 0;
 
     try {
       const vertexShader = compileShader(
@@ -1310,6 +1313,18 @@ export default function MirrorChamber() {
 
       const render = (now: number) => {
         if (disposed || !sceneProgram || !postProgram) return;
+        fpsFrameCount += 1;
+        const fpsSampleDuration = now - fpsSampleStartedAt;
+        if (fpsSampleDuration >= 500) {
+          if (fpsCounterRef.current) {
+            fpsCounterRef.current.textContent =
+              `${Math.round(
+                (fpsFrameCount * 1000) / fpsSampleDuration,
+              )} FPS`;
+          }
+          fpsSampleStartedAt = now;
+          fpsFrameCount = 0;
+        }
         resize();
         const controls = controlsRef.current;
         const elapsedFrames =
@@ -1492,6 +1507,13 @@ export default function MirrorChamber() {
         className="chamber"
         aria-label="A photorealistic interactive icosahedron with one-way mirrored faces and light bars along its interior edges"
       />
+      <div
+        ref={fpsCounterRef}
+        className="fps-counter"
+        aria-hidden="true"
+      >
+        -- FPS
+      </div>
       {error ? (
         <div className="error-panel" role="alert">
           {error}

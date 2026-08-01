@@ -44,6 +44,23 @@ body {
   cursor: grabbing;
 }
 
+.fps-counter {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  padding: 5px 7px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.48);
+  color: rgba(255, 255, 255, 0.72);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  pointer-events: none;
+  user-select: none;
+}
+
 .error-panel {
   position: absolute;
   top: 50%;
