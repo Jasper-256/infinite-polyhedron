@@ -10,6 +10,8 @@ const REFLECTION_FADE_RATE = 0.064;
 const REFERENCE_FRAME_DURATION_MS = 1000 / 120;
 const ROTATION_FOLLOW_PER_REFERENCE_FRAME = 0.07;
 const FRAME_RADIUS = 0.04;
+const MIN_ZOOM = 1.72;
+const MAX_ZOOM = 40;
 
 const VERTEX_SHADER = `precision highp float;
 in vec2 position;
@@ -1669,8 +1671,48 @@ export default function MirrorChamber() {
         animationFrame = window.requestAnimationFrame(render);
       };
 
+      const touchPointers = new Map<
+        number,
+        { x: number; y: number }
+      >();
+      let previousPinchDistance: number | null = null;
+
+      const getPinchDistance = () => {
+        const touches = Array.from(touchPointers.values());
+        if (touches.length < 2) return null;
+        return Math.hypot(
+          touches[1].x - touches[0].x,
+          touches[1].y - touches[0].y,
+        );
+      };
+
       const pointerDown = (event: PointerEvent) => {
         const controls = controlsRef.current;
+        if (event.pointerType === "touch") {
+          event.preventDefault();
+          touchPointers.set(event.pointerId, {
+            x: event.clientX,
+            y: event.clientY,
+          });
+          canvas.setPointerCapture(event.pointerId);
+          controls.lastInteraction = performance.now();
+
+          if (touchPointers.size === 1) {
+            controls.dragging = true;
+            controls.pointerId = event.pointerId;
+            controls.x = event.clientX;
+            controls.y = event.clientY;
+            canvas.classList.add("is-dragging");
+          } else {
+            controls.dragging = false;
+            controls.pointerId = null;
+            previousPinchDistance = getPinchDistance();
+            controls.targetZoom = controls.zoom;
+            canvas.classList.remove("is-dragging");
+          }
+          return;
+        }
+
         if (
           controls.pointerId !== null ||
           !event.isPrimary ||
@@ -1691,6 +1733,36 @@ export default function MirrorChamber() {
 
       const pointerMove = (event: PointerEvent) => {
         const controls = controlsRef.current;
+        if (event.pointerType === "touch") {
+          if (!touchPointers.has(event.pointerId)) return;
+          event.preventDefault();
+          touchPointers.set(event.pointerId, {
+            x: event.clientX,
+            y: event.clientY,
+          });
+
+          if (touchPointers.size >= 2) {
+            const pinchDistance = getPinchDistance();
+            if (
+              pinchDistance !== null &&
+              previousPinchDistance !== null &&
+              pinchDistance > 0
+            ) {
+              const zoom =
+                controls.zoom *
+                (previousPinchDistance / pinchDistance);
+              controls.zoom = Math.max(
+                MIN_ZOOM,
+                Math.min(MAX_ZOOM, zoom),
+              );
+              controls.targetZoom = controls.zoom;
+            }
+            previousPinchDistance = pinchDistance;
+            controls.lastInteraction = performance.now();
+            return;
+          }
+        }
+
         if (
           !controls.dragging ||
           controls.pointerId !== event.pointerId
@@ -1717,6 +1789,37 @@ export default function MirrorChamber() {
 
       const pointerUp = (event: PointerEvent) => {
         const controls = controlsRef.current;
+        if (event.pointerType === "touch") {
+          if (!touchPointers.has(event.pointerId)) return;
+          touchPointers.delete(event.pointerId);
+          if (canvas.hasPointerCapture(event.pointerId)) {
+            canvas.releasePointerCapture(event.pointerId);
+          }
+          controls.lastInteraction = performance.now();
+
+          if (touchPointers.size >= 2) {
+            previousPinchDistance = getPinchDistance();
+          } else if (touchPointers.size === 1) {
+            const [remainingId, remainingTouch] =
+              touchPointers.entries().next().value as [
+                number,
+                { x: number; y: number },
+              ];
+            previousPinchDistance = null;
+            controls.dragging = true;
+            controls.pointerId = remainingId;
+            controls.x = remainingTouch.x;
+            controls.y = remainingTouch.y;
+            canvas.classList.add("is-dragging");
+          } else {
+            previousPinchDistance = null;
+            controls.dragging = false;
+            controls.pointerId = null;
+            canvas.classList.remove("is-dragging");
+          }
+          return;
+        }
+
         if (controls.pointerId !== event.pointerId) return;
 
         controls.dragging = false;
@@ -1732,9 +1835,9 @@ export default function MirrorChamber() {
         event.preventDefault();
         const controls = controlsRef.current;
         controls.targetZoom = Math.max(
-          1.72,
+          MIN_ZOOM,
           Math.min(
-            40,
+            MAX_ZOOM,
             controls.targetZoom *
               Math.exp(event.deltaY * 0.001),
           ),
