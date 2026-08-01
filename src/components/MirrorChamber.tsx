@@ -24,13 +24,14 @@ uniform vec2 uRotation;
 uniform float uZoom;
 uniform int uBounces;
 uniform vec4 uPlanes[20];
-uniform vec3 uLights[12];
+uniform vec3 uEdgeA[30];
+uniform vec3 uEdgeB[30];
 uniform vec3 uFaceA[20];
 uniform vec3 uFaceB[20];
 uniform vec3 uFaceC[20];
 
 #define FACE_COUNT 20
-#define LIGHT_COUNT 12
+#define EDGE_COUNT 30
 #define MAX_BOUNCES 24
 #define FAR 100.0
 
@@ -65,6 +66,58 @@ float segmentDistance(vec3 p, vec3 a, vec3 b) {
   vec3 ba = b - a;
   float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
   return length(pa - ba * h);
+}
+
+float segmentSegmentDistance(
+  vec3 p1,
+  vec3 q1,
+  vec3 p2,
+  vec3 q2,
+  out float firstAlong
+) {
+  vec3 d1 = q1 - p1;
+  vec3 d2 = q2 - p2;
+  vec3 r = p1 - p2;
+  float a = dot(d1, d1);
+  float e = dot(d2, d2);
+  float f = dot(d2, r);
+  float s;
+  float t;
+
+  if (a <= 0.000001 && e <= 0.000001) {
+    s = 0.0;
+    t = 0.0;
+  } else if (a <= 0.000001) {
+    s = 0.0;
+    t = clamp(f / e, 0.0, 1.0);
+  } else {
+    float c = dot(d1, r);
+    if (e <= 0.000001) {
+      t = 0.0;
+      s = clamp(-c / a, 0.0, 1.0);
+    } else {
+      float b = dot(d1, d2);
+      float denominator = a * e - b * b;
+      s = denominator != 0.0
+        ? clamp((b * f - c * e) / denominator, 0.0, 1.0)
+        : 0.0;
+      t = (b * s + f) / e;
+
+      if (t < 0.0) {
+        t = 0.0;
+        s = clamp(-c / a, 0.0, 1.0);
+      } else if (t > 1.0) {
+        t = 1.0;
+        s = clamp((b - c) / a, 0.0, 1.0);
+      }
+    }
+  }
+
+  firstAlong = s;
+  return length(
+    (p1 + d1 * s) -
+    (p2 + d2 * t)
+  );
 }
 
 float faceEdgeDistance(vec3 point, int faceIndex) {
@@ -191,8 +244,8 @@ vec3 background(vec3 ro, vec3 rd) {
 }
 
 vec3 traceMirroredInterior(vec3 ro, vec3 rd) {
-  const vec3 lampColor = vec3(1.0, 0.80, 0.58);
-  const vec3 lampHot = vec3(1.0, 0.97, 0.89);
+  const vec3 barColor = vec3(1.0, 0.78, 0.52);
+  const vec3 barHot = vec3(1.0, 0.97, 0.88);
   vec3 radiance = vec3(0.0);
   vec3 throughput = vec3(1.0);
 
@@ -204,58 +257,68 @@ vec3 traceMirroredInterior(vec3 ro, vec3 rd) {
     float wallT = intersectInterior(ro, rd, faceNormal, faceIndex);
     if (wallT >= FAR - 1.0) break;
 
-    float nearestLamp = FAR;
+    float nearestBar = FAR;
     float nearestAlong = 0.0;
-    for (int lightIndex = 0; lightIndex < LIGHT_COUNT; lightIndex++) {
-      vec3 lamp = uLights[lightIndex];
-      float alongRay = clamp(dot(lamp - ro, rd), 0.0, wallT);
-      float distanceToRay = length(ro + rd * alongRay - lamp);
-      if (distanceToRay < nearestLamp) {
-        nearestLamp = distanceToRay;
-        nearestAlong = alongRay;
+    vec3 rayEnd = ro + rd * wallT;
+    for (int edgeIndex = 0; edgeIndex < EDGE_COUNT; edgeIndex++) {
+      float rayAlong;
+      float distanceToBar = segmentSegmentDistance(
+        ro,
+        rayEnd,
+        uEdgeA[edgeIndex],
+        uEdgeB[edgeIndex],
+        rayAlong
+      );
+      if (distanceToBar < nearestBar) {
+        nearestBar = distanceToBar;
+        nearestAlong = rayAlong * wallT;
       }
     }
 
-    float core = exp(-nearestLamp * 78.0);
-    float tightBloom = exp(-nearestLamp * 27.0);
-    float softBloom = exp(-nearestLamp * 8.5);
-    float depthLoss = exp(-float(bounce) * 0.052);
+    float core = 1.0 -
+      smoothstep(0.002, 0.010, nearestBar);
+    float tightBloom = exp(-nearestBar * 82.0);
+    float softBloom = exp(-nearestBar * 30.0);
+    float depthLoss = exp(-float(bounce) * 0.082);
     float airLoss = exp(-nearestAlong * 0.035);
     radiance += throughput * depthLoss * airLoss * (
-      lampHot * core * 5.6 +
-      lampColor * tightBloom * 0.56 +
-      lampColor * softBloom * 0.032
+      barHot * core * 0.72 +
+      barColor * tightBloom * 0.038 +
+      barColor * softBloom * 0.0012
     );
 
-    if (nearestLamp < 0.022) {
-      radiance += throughput * lampHot * 7.0;
+    if (nearestBar < 0.0035) {
+      radiance += throughput * barHot * 0.75;
       break;
     }
 
     vec3 hit = ro + rd * wallT;
     float edgeDistance = faceEdgeDistance(hit, faceIndex);
     float seam = exp(-edgeDistance * 85.0);
-    float cornerDistance = FAR;
-
-    for (int lightIndex = 0; lightIndex < LIGHT_COUNT; lightIndex++) {
-      cornerDistance = min(
-        cornerDistance,
-        length(hit - uLights[lightIndex])
+    float barDistance = FAR;
+    for (int edgeIndex = 0; edgeIndex < EDGE_COUNT; edgeIndex++) {
+      barDistance = min(
+        barDistance,
+        segmentDistance(
+          hit,
+          uEdgeA[edgeIndex],
+          uEdgeB[edgeIndex]
+        )
       );
     }
 
-    float cornerLight = exp(-cornerDistance * 7.0);
+    float reflectedBarLight = exp(-barDistance * 15.0);
     float faceVariation =
       0.88 + 0.12 * fract(float(faceIndex) * 0.618033);
     float grazing = pow(
       1.0 - abs(dot(faceNormal, -rd)),
       5.0
     );
-    float reflectivity = mix(0.905, 0.965, grazing);
+    float reflectivity = mix(0.82, 0.92, grazing);
 
     vec3 coating = vec3(0.0065, 0.0072, 0.0078) * faceVariation;
     coating += vec3(0.014, 0.013, 0.012) * seam;
-    coating += lampColor * cornerLight * 0.18;
+    coating += barColor * reflectedBarLight * 0.014;
     radiance += throughput * coating * (1.0 - reflectivity) * 2.0;
 
     throughput *= reflectivity;
@@ -372,7 +435,8 @@ type Point = [number, number, number];
 
 type GeometryData = {
   planes: Float32Array;
-  lights: Float32Array;
+  edgeA: Float32Array;
+  edgeB: Float32Array;
   faceA: Float32Array;
   faceB: Float32Array;
   faceC: Float32Array;
@@ -495,13 +559,35 @@ function buildIcosahedron(): GeometryData {
     faceC.push(...c);
   }
 
-  const lights = vertices.flatMap(
-    ([x, y, z]) => [x * 0.902, y * 0.902, z * 0.902],
-  );
+  const edgeA: number[] = [];
+  const edgeB: number[] = [];
+  for (let i = 0; i < vertices.length; i++) {
+    for (let j = i + 1; j < vertices.length; j++) {
+      if (
+        Math.abs(distance(vertices[i], vertices[j]) - edgeLength) <
+        0.001
+      ) {
+        const a = vertices[i].map((value) => value * 0.91) as Point;
+        const b = vertices[j].map((value) => value * 0.91) as Point;
+        const trim = 0.035;
+        edgeA.push(
+          a[0] + (b[0] - a[0]) * trim,
+          a[1] + (b[1] - a[1]) * trim,
+          a[2] + (b[2] - a[2]) * trim,
+        );
+        edgeB.push(
+          b[0] + (a[0] - b[0]) * trim,
+          b[1] + (a[1] - b[1]) * trim,
+          b[2] + (a[2] - b[2]) * trim,
+        );
+      }
+    }
+  }
 
   return {
     planes: new Float32Array(planes),
-    lights: new Float32Array(lights),
+    edgeA: new Float32Array(edgeA),
+    edgeB: new Float32Array(edgeB),
     faceA: new Float32Array(faceA),
     faceB: new Float32Array(faceB),
     faceC: new Float32Array(faceC),
@@ -621,7 +707,8 @@ export default function MirrorChamber() {
         zoom: uniform("uZoom"),
         bounces: uniform("uBounces"),
         planes: uniform("uPlanes[0]"),
-        lights: uniform("uLights[0]"),
+        edgeA: uniform("uEdgeA[0]"),
+        edgeB: uniform("uEdgeB[0]"),
         faceA: uniform("uFaceA[0]"),
         faceB: uniform("uFaceB[0]"),
         faceC: uniform("uFaceC[0]"),
@@ -629,7 +716,8 @@ export default function MirrorChamber() {
 
       const geometry = buildIcosahedron();
       gl.uniform4fv(uniforms.planes, geometry.planes);
-      gl.uniform3fv(uniforms.lights, geometry.lights);
+      gl.uniform3fv(uniforms.edgeA, geometry.edgeA);
+      gl.uniform3fv(uniforms.edgeB, geometry.edgeB);
       gl.uniform3fv(uniforms.faceA, geometry.faceA);
       gl.uniform3fv(uniforms.faceB, geometry.faceB);
       gl.uniform3fv(uniforms.faceC, geometry.faceC);
@@ -805,7 +893,7 @@ export default function MirrorChamber() {
       <canvas
         ref={canvasRef}
         className="chamber"
-        aria-label="A photorealistic interactive icosahedron with one-way mirrored faces and lights at its interior vertices"
+        aria-label="A photorealistic interactive icosahedron with one-way mirrored faces and light bars along its interior edges"
       />
       {error ? (
         <div className="error-panel" role="alert">
