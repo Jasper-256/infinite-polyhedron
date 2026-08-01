@@ -37,6 +37,10 @@ uniform vec3 uFaceC[20];
 #define MAX_BOUNCES 24
 #define FAR 100.0
 
+const float LIGHT_CORE_RADIUS = 0.014;
+const float LIGHT_RAIL_RADIUS = 0.036;
+const float MIRROR_EDGE_INSET = 0.043;
+
 float hash21(vec2 p) {
   p = fract(p * vec2(123.34, 456.21));
   p += dot(p, p + 45.32);
@@ -354,12 +358,14 @@ vec3 traceMirroredInterior(vec3 ro, vec3 rd) {
     radiance += throughput * depthLoss * airLoss *
       barColor * opticalBloom * 0.018;
 
-    if (nearestBar < 0.014) {
+    if (nearestBar < LIGHT_CORE_RADIUS) {
       float diffuser = 1.0 -
-        smoothstep(0.008, 0.014, nearestBar);
+        smoothstep(0.008, LIGHT_CORE_RADIUS, nearestBar);
       float roundProfile = sqrt(max(
         0.0,
-        1.0 - (nearestBar * nearestBar) / (0.014 * 0.014)
+        1.0 -
+          (nearestBar * nearestBar) /
+          (LIGHT_CORE_RADIUS * LIGHT_CORE_RADIUS)
       ));
       vec3 tubeColor = mix(barColor, vec3(1.0), diffuser * 0.34);
       radiance += throughput * depthLoss * airLoss *
@@ -367,7 +373,7 @@ vec3 traceMirroredInterior(vec3 ro, vec3 rd) {
       break;
     }
 
-    if (nearestBar < 0.036) {
+    if (nearestBar < LIGHT_RAIL_RADIUS) {
       float railBevel = smoothstep(0.018, 0.032, nearestBar);
       radiance += throughput * depthLoss *
         vec3(0.010, 0.012, 0.014) * railBevel;
@@ -376,6 +382,23 @@ vec3 traceMirroredInterior(vec3 ro, vec3 rd) {
 
     vec3 hit = ro + rd * wallT;
     float edgeDistance = faceEdgeDistance(hit, faceIndex);
+    if (edgeDistance < MIRROR_EDGE_INSET) {
+      // This is a real break in the reflective panel, not a dark
+      // overlay. Rays that miss the edge-mounted rail terminate in
+      // the narrow structural channel between adjacent mirrors.
+      float channelBevel = smoothstep(
+        LIGHT_RAIL_RADIUS,
+        MIRROR_EDGE_INSET,
+        edgeDistance
+      );
+      radiance += throughput * depthLoss *
+        mix(
+          vec3(0.0025, 0.0030, 0.0035),
+          vec3(0.009, 0.010, 0.011),
+          channelBevel
+        );
+      break;
+    }
     float seam = exp(-edgeDistance * 85.0);
     float faceVariation =
       0.88 + 0.12 * fract(float(faceIndex) * 0.618033);
@@ -723,8 +746,8 @@ function buildIcosahedron(): GeometryData {
       ) {
         frameA.push(...vertices[i]);
         frameB.push(...vertices[j]);
-        const a = vertices[i].map((value) => value * 0.91) as Point;
-        const b = vertices[j].map((value) => value * 0.91) as Point;
+        const a = vertices[i];
+        const b = vertices[j];
         const trim = 0.035;
         edgeA.push(
           a[0] + (b[0] - a[0]) * trim,
