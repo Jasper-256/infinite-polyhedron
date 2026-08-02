@@ -6,7 +6,7 @@ import * as THREE from "three";
 // Rendering quality controls.
 const MIRROR_BOUNCES = 20;
 const POST_PROCESS_SAMPLES = 20;
-const REFLECTION_FADE_RATE = 0.2;
+const REFLECTION_FADE_RATE = 0.1;
 const MOMENTUM_DECAY_MS = 200;
 const FRAME_RADIUS = 0.043;
 const ICOSAHEDRON_RADIUS = 1.56;
