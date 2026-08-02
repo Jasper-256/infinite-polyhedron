@@ -7,9 +7,11 @@ import * as THREE from "three";
 const MIRROR_BOUNCES = 24;
 const POST_PROCESS_SAMPLES = 20;
 const REFLECTION_FADE_RATE = 0.064;
-const REFERENCE_FRAME_DURATION_MS = 1000 / 120;
-const ROTATION_FOLLOW_PER_REFERENCE_FRAME = 0.07;
-const FRAME_RADIUS = 0.04;
+const MOMENTUM_DECAY_MS = 200;
+const FRAME_RADIUS = 0.043;
+const ICOSAHEDRON_RADIUS = 1.56;
+const SQUARE_VIEWPORT_DEFAULT_ZOOM = 5.55;
+const DRAG_RADIANS_ACROSS_SHAPE = Math.PI;
 const MIN_ZOOM = 1.72;
 const MAX_ZOOM = 40;
 
@@ -1036,7 +1038,7 @@ function buildIcosahedron(): GeometryData {
     [-phi, 0, 1],
   ];
 
-  const radius = 1.56;
+  const radius = ICOSAHEDRON_RADIUS;
   const vertices = rawVertices.map(([x, y, z]): Point => {
     const length = Math.hypot(x, y, z);
     return [
@@ -1270,45 +1272,6 @@ function screenDragQuaternion(
   ];
 }
 
-function slerpQuaternions(
-  from: Quaternion,
-  to: Quaternion,
-  amount: number,
-): Quaternion {
-  let target = to;
-  let cosine =
-    from[0] * to[0] +
-    from[1] * to[1] +
-    from[2] * to[2] +
-    from[3] * to[3];
-
-  if (cosine < 0) {
-    cosine = -cosine;
-    target = [-to[0], -to[1], -to[2], -to[3]];
-  }
-
-  if (cosine > 0.9995) {
-    return normalizeQuaternion([
-      from[0] + (target[0] - from[0]) * amount,
-      from[1] + (target[1] - from[1]) * amount,
-      from[2] + (target[2] - from[2]) * amount,
-      from[3] + (target[3] - from[3]) * amount,
-    ]);
-  }
-
-  const angle = Math.acos(Math.min(1, cosine));
-  const inverseSine = 1 / Math.sin(angle);
-  const fromScale =
-    Math.sin((1 - amount) * angle) * inverseSine;
-  const toScale = Math.sin(amount * angle) * inverseSine;
-  return [
-    from[0] * fromScale + target[0] * toScale,
-    from[1] * fromScale + target[1] * toScale,
-    from[2] * fromScale + target[2] * toScale,
-    from[3] * fromScale + target[3] * toScale,
-  ];
-}
-
 function writeQuaternionMatrix(
   quaternion: Quaternion,
   matrix: Float32Array,
@@ -1351,9 +1314,11 @@ export default function MirrorChamber() {
     x: 0,
     y: 0,
     rotation: INITIAL_ROTATION,
-    targetRotation: INITIAL_ROTATION,
-    zoom: 5.55,
-    targetZoom: 5.55,
+    angularVelocityX: 0,
+    angularVelocityY: 0,
+    lastPointerMoveAt: 0,
+    zoom: SQUARE_VIEWPORT_DEFAULT_ZOOM,
+    targetZoom: SQUARE_VIEWPORT_DEFAULT_ZOOM,
     lastInteraction: 0,
   });
 
@@ -1472,7 +1437,7 @@ export default function MirrorChamber() {
           uResolution: { value: sceneResolution },
           uTime: { value: 0 },
           uRotation: { value: sceneRotation },
-          uZoom: { value: 5.55 },
+          uZoom: { value: SQUARE_VIEWPORT_DEFAULT_ZOOM },
           uFaceEdgeOriginA: {
             value: geometry.faceEdgeOriginA,
           },
@@ -1508,7 +1473,7 @@ export default function MirrorChamber() {
           uResolution: { value: frameResolution },
           uTime: { value: 0 },
           uRotation: { value: frameRotation },
-          uZoom: { value: 5.55 },
+          uZoom: { value: SQUARE_VIEWPORT_DEFAULT_ZOOM },
         },
         depthTest: true,
         depthWrite: true,
@@ -1525,7 +1490,7 @@ export default function MirrorChamber() {
         uniforms: {
           uScene: { value: null },
           uTexel: { value: postTexel },
-          uZoom: { value: 5.55 },
+          uZoom: { value: SQUARE_VIEWPORT_DEFAULT_ZOOM },
         },
         depthTest: false,
         depthWrite: false,
@@ -1576,13 +1541,15 @@ export default function MirrorChamber() {
       renderTarget.texture.colorSpace = THREE.NoColorSpace;
       postMaterial.uniforms.uScene.value = renderTarget.texture;
 
-      const isCompact = window.matchMedia(
-        "(max-width: 700px)",
-      ).matches;
-      if (isCompact) {
-        controlsRef.current.zoom = 8.5;
-        controlsRef.current.targetZoom = 8.5;
-      }
+      const getDefaultZoom = () =>
+        SQUARE_VIEWPORT_DEFAULT_ZOOM *
+        (canvas.clientHeight /
+          Math.max(
+            1,
+            Math.min(canvas.clientWidth, canvas.clientHeight),
+          ));
+      controlsRef.current.zoom = getDefaultZoom();
+      controlsRef.current.targetZoom = controlsRef.current.zoom;
 
       let renderWidth = 0;
       let renderHeight = 0;
@@ -1630,21 +1597,35 @@ export default function MirrorChamber() {
 
         resize();
         const controls = controlsRef.current;
-        const elapsedFrames =
-          Math.max(0, now - previousRenderAt) /
-          REFERENCE_FRAME_DURATION_MS;
-        previousRenderAt = now;
-        const rotationFollow =
-          1 -
-          Math.pow(
-            1 - ROTATION_FOLLOW_PER_REFERENCE_FRAME,
-            elapsedFrames,
-          );
-        controls.rotation = slerpQuaternions(
-          controls.rotation,
-          controls.targetRotation,
-          rotationFollow,
+        const elapsedMilliseconds = Math.max(
+          0,
+          now - previousRenderAt,
         );
+        previousRenderAt = now;
+
+        if (
+          !controls.dragging &&
+          (Math.abs(controls.angularVelocityX) > 0.000001 ||
+            Math.abs(controls.angularVelocityY) > 0.000001)
+        ) {
+          const momentumDecay = Math.exp(
+            -elapsedMilliseconds / MOMENTUM_DECAY_MS,
+          );
+          const integratedTime =
+            MOMENTUM_DECAY_MS * (1 - momentumDecay);
+          const momentumRotation = screenDragQuaternion(
+            controls.angularVelocityX * integratedTime,
+            controls.angularVelocityY * integratedTime,
+          );
+          controls.rotation = normalizeQuaternion(
+            multiplyQuaternions(
+              momentumRotation,
+              controls.rotation,
+            ),
+          );
+          controls.angularVelocityX *= momentumDecay;
+          controls.angularVelocityY *= momentumDecay;
+        }
         controls.zoom +=
           (controls.targetZoom - controls.zoom) * 0.08;
 
@@ -1695,17 +1676,23 @@ export default function MirrorChamber() {
             y: event.clientY,
           });
           canvas.setPointerCapture(event.pointerId);
-          controls.lastInteraction = performance.now();
+          const now = performance.now();
+          controls.lastInteraction = now;
 
           if (touchPointers.size === 1) {
             controls.dragging = true;
             controls.pointerId = event.pointerId;
             controls.x = event.clientX;
             controls.y = event.clientY;
+            controls.angularVelocityX = 0;
+            controls.angularVelocityY = 0;
+            controls.lastPointerMoveAt = now;
             canvas.classList.add("is-dragging");
           } else {
             controls.dragging = false;
             controls.pointerId = null;
+            controls.angularVelocityX = 0;
+            controls.angularVelocityY = 0;
             previousPinchDistance = getPinchDistance();
             controls.targetZoom = controls.zoom;
             canvas.classList.remove("is-dragging");
@@ -1726,7 +1713,10 @@ export default function MirrorChamber() {
         controls.pointerId = event.pointerId;
         controls.x = event.clientX;
         controls.y = event.clientY;
-        controls.lastInteraction = performance.now();
+        controls.angularVelocityX = 0;
+        controls.angularVelocityY = 0;
+        controls.lastPointerMoveAt = performance.now();
+        controls.lastInteraction = controls.lastPointerMoveAt;
         canvas.setPointerCapture(event.pointerId);
         canvas.classList.add("is-dragging");
       };
@@ -1772,19 +1762,52 @@ export default function MirrorChamber() {
 
         const deltaX = event.clientX - controls.x;
         const deltaY = event.clientY - controls.y;
-        const dragRotation = screenDragQuaternion(
-          deltaX * 0.005,
-          deltaY * 0.005,
+        const now = performance.now();
+        const elapsedSinceMove = Math.max(
+          1,
+          now - controls.lastPointerMoveAt,
         );
-        controls.targetRotation = normalizeQuaternion(
+        const cameraFocalLength = 2.18 / 0.79;
+        const defaultShapeDiameter = Math.max(
+          1,
+          (canvas.clientHeight *
+            ICOSAHEDRON_RADIUS *
+            cameraFocalLength) /
+            getDefaultZoom(),
+        );
+        const dragRadiansPerPixel =
+          DRAG_RADIANS_ACROSS_SHAPE /
+          defaultShapeDiameter;
+        const horizontalRotation =
+          deltaX * dragRadiansPerPixel;
+        const verticalRotation =
+          deltaY * dragRadiansPerPixel;
+        const dragRotation = screenDragQuaternion(
+          horizontalRotation,
+          verticalRotation,
+        );
+        controls.rotation = normalizeQuaternion(
           multiplyQuaternions(
             dragRotation,
-            controls.targetRotation,
+            controls.rotation,
           ),
         );
+        const velocityBlend = Math.min(
+          1,
+          elapsedSinceMove / 20,
+        );
+        controls.angularVelocityX +=
+          (horizontalRotation / elapsedSinceMove -
+            controls.angularVelocityX) *
+          velocityBlend;
+        controls.angularVelocityY +=
+          (verticalRotation / elapsedSinceMove -
+            controls.angularVelocityY) *
+          velocityBlend;
         controls.x = event.clientX;
         controls.y = event.clientY;
-        controls.lastInteraction = performance.now();
+        controls.lastPointerMoveAt = now;
+        controls.lastInteraction = now;
       };
 
       const pointerUp = (event: PointerEvent) => {
@@ -1795,7 +1818,8 @@ export default function MirrorChamber() {
           if (canvas.hasPointerCapture(event.pointerId)) {
             canvas.releasePointerCapture(event.pointerId);
           }
-          controls.lastInteraction = performance.now();
+          const now = performance.now();
+          controls.lastInteraction = now;
 
           if (touchPointers.size >= 2) {
             previousPinchDistance = getPinchDistance();
@@ -1810,11 +1834,21 @@ export default function MirrorChamber() {
             controls.pointerId = remainingId;
             controls.x = remainingTouch.x;
             controls.y = remainingTouch.y;
+            controls.angularVelocityX = 0;
+            controls.angularVelocityY = 0;
+            controls.lastPointerMoveAt = now;
             canvas.classList.add("is-dragging");
           } else {
             previousPinchDistance = null;
             controls.dragging = false;
             controls.pointerId = null;
+            if (
+              event.type === "pointercancel" ||
+              now - controls.lastPointerMoveAt > 80
+            ) {
+              controls.angularVelocityX = 0;
+              controls.angularVelocityY = 0;
+            }
             canvas.classList.remove("is-dragging");
           }
           return;
@@ -1824,7 +1858,15 @@ export default function MirrorChamber() {
 
         controls.dragging = false;
         controls.pointerId = null;
-        controls.lastInteraction = performance.now();
+        const now = performance.now();
+        controls.lastInteraction = now;
+        if (
+          event.type === "pointercancel" ||
+          now - controls.lastPointerMoveAt > 80
+        ) {
+          controls.angularVelocityX = 0;
+          controls.angularVelocityY = 0;
+        }
         if (canvas.hasPointerCapture(event.pointerId)) {
           canvas.releasePointerCapture(event.pointerId);
         }
