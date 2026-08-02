@@ -4,14 +4,14 @@ import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 
 // Rendering quality controls.
-const MIRROR_BOUNCES = 24;
+const MIRROR_BOUNCES = 20;
 const POST_PROCESS_SAMPLES = 20;
-const REFLECTION_FADE_RATE = 0.064;
+const REFLECTION_FADE_RATE = 0.2;
 const MOMENTUM_DECAY_MS = 200;
 const FRAME_RADIUS = 0.043;
 const ICOSAHEDRON_RADIUS = 1.56;
 const SQUARE_VIEWPORT_DEFAULT_ZOOM = 5.55;
-const DRAG_RADIANS_ACROSS_SHAPE = Math.PI;
+const DRAG_RADIANS_ACROSS_SHAPE = Math.PI * 0.75;
 const MIN_ZOOM = 1.72;
 const MAX_ZOOM = 40;
 
